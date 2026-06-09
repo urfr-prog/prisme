@@ -6,10 +6,10 @@
 <title>ADAM Grid — v10 · 5×9</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--cell:min(80px,20vw);--gap:8px;--grid-w:calc(var(--cell)*5 + var(--gap)*4)}
+:root{--side:10px;--gap:6px;--grid-w:calc(100vw - var(--side)*2);--cell:calc((var(--grid-w) - var(--gap)*4)/5);--grid-h:calc(var(--cell)*9 + var(--gap)*8)}
 html,body{height:100%;overflow:hidden;touch-action:none}
 body{background:#12131a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;user-select:none;color:rgba(180,180,190,0.5)}
-#c{width:var(--grid-w);height:calc(var(--cell)*9 + var(--gap)*8);touch-action:none;cursor:default;border-radius:4px}
+#c{width:var(--grid-w);max-width:var(--grid-w);height:min(var(--grid-h),calc(100vh - var(--side)*2));touch-action:none;cursor:default;border-radius:4px}
 .top-bar{position:fixed;top:env(safe-area-inset-top,8px);left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:4px;z-index:10;background:transparent;padding:6px 0 8px}
 .logo{display:flex;align-items:center;gap:4px;height:36px;cursor:pointer}
 .logo-icon{width:32px;height:32px}
