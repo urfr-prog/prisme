@@ -1,318 +1,611 @@
 <!DOCTYPE html>
-<!--
-═══════════════════════════════════════════════════════════════════════════════
-  ADAM — STACK / V4  ·  SPÉCIFICATION DU CONCEPT (à lire avant toute modification)
-═══════════════════════════════════════════════════════════════════════════════
-
-  Ce fichier est le prototype de référence du jeu ADAM dans sa direction actuelle.
-  Auteur : Gregory. Toute instance qui reprend ce projet doit comprendre les enjeux
-  ci-dessous SANS qu'on ait à les réexpliquer.
-
-  ── LE CONCEPT EN UNE PHRASE ──────────────────────────────────────────────────
-  Une PILE de plans (tableaux) superposés en profondeur. Chaque plan est un
-  micro-puzzle fermé. On résout le plan de tête ; à la complétion, le RÉSULTAT
-  produit DESCEND sur une case imposée du plan suivant, et on migre vers lui via
-  un effet de zoom-traversant. Le résultat de chaque plan alimente le suivant :
-  c'est une CHAÎNE, pas une suite de puzzles indépendants.
-
-  ── LA MÉCANIQUE DE JEU (portée fidèlement d'ADAM V4 — NE PAS CONFONDRE) ───────
-  • DÉPLACEMENT = GLISSEMENT TAPIS-ROULANT. Drag horizontal => toute la LIGNE
-    glisse (wrap-around : ce qui sort d'un côté revient de l'autre). Drag vertical
-    => toute la COLONNE glisse (wrap-around). Snap au cran le plus proche en fin
-    de geste.
-    ⚠️ IMPORTANT : l'ÉTAT (white/silver/gold...) N'INFLUENCE PAS le déplacement.
-       TOUS les dominos glissent de la même façon, quel que soit leur état.
-       (Ne PAS réintroduire la logique du stack-v2 où l'état dictait la direction.)
-  • TAP sur un domino = ROTATION (+90° moitié droite, -90° moitié gauche).
-    La rotation change quelle FACE est exposée sur chaque bord (haut/bas/gauche/droite).
-  • Chaque domino a DEUX faces (face1, face2) + un état par face (state1, state2).
-
-  ── LA FUSION ──────────────────────────────────────────────────────────────────
-  Deux dominos adjacents fusionnent si les faces qui SE TOUCHENT sont IDENTIQUES,
-  c.-à-d. MÊME ICÔNE **ET** MÊME ÉTAT. Les deux faces en contact s'annulent ; les
-  deux faces partenaires (restantes) forment le domino-résultat, dont l'état MONTE
-  d'un cran (white→silver→gold→emerald→cosmic→supernovae→plasma).
-  Conséquence clé : l'état sert UNIQUEMENT de palier de fusion, pas de mobilité.
-
-  ── L'ENVELOPPE SPATIALE (le "stack") ──────────────────────────────────────────
-  Le plan de tête est devant ; les plans suivants s'enfoncent en Z et s'assombrissent.
-  À la complétion du plan de tête, navRight() joue le zoom-traversant et le plan
-  suivant devient la nouvelle tête, avec le résultat déjà posé sur LANDING_IDX.
-
-  ── PARAMÈTRES DE NIVEAU (la richesse vient de la CONFIG, pas de nouvelles règles) ──
-  • TARGET_BY_BOARD : condition de victoire par plan = "il reste N dominos".
-    (Tête = 1. Un plan avec leurre = souvent 2, car le leurre reste en place.)
-    NOTE DE DESIGN : la condition de victoire est pensée comme un PARAMÈTRE de niveau,
-    pas une constante. À terme on veut plusieurs types d'objectifs possibles :
-    "il reste N dominos", "fabriquer telle pièce précise (icône+état)", etc.
-  • LANDING_IDX   : case imposée où le résultat descend sur le plan suivant.
-    Les plans générés laissent cette case LIBRE (on conçoit le plan AUTOUR d'elle).
-  • ÉTATS DE DÉPART : un niveau peut poser des dominos déjà en silver/gold/etc.
-    Rôle = créer des PALIERS DE FUSION. Un gold de départ NE fusionne PAS avec les
-    blancs (états différents) : le joueur doit d'abord CONSTRUIRE un gold compatible.
-  • RÉTROGRADATION À LA MIGRATION (DEMOTE_BY_BOARD) : en traversant vers un plan, le
-    résultat PERD des crans d'état (variable par plan). Concrétise l'idée "le gold peut
-    redevenir silver". Franchir a un COÛT : on ne cumule pas la puissance indéfiniment.
-    Ex actuel : un emerald produit au plan 2 descend au plan 3 rétrogradé en silver (-2).
-  • OBJECTIF "ATTEINDRE UN ÉTAT" (à faire) : le plan 3 ASPIRE à un objectif de type
-    "fabriquer un domino d'état gold" (repromouvoir le silver entrant), mais la cible
-    actuelle reste un simple COMPTE de pièces (TARGET_BY_BOARD). Introduire un type
-    d'objectif "atteindre tel état" est la prochaine brique logique si le test plaît.
-
-  ── LES SOURCES DE DIFFICULTÉ IDENTIFIÉES (axe de recherche actuel) ─────────────
-  1. LE LEURRE : ajouter un domino qui ne sert PAS la solution, idéalement tentant
-     (il POURRAIT fusionner mais te piège). Fait passer le puzzle de "comment
-     fusionner" à "QUOI fusionner" — de l'exécution au discernement.
-  2. LES PALIERS D'ÉTAT : états de départ qui forcent des fusions préparatoires.
-  3. LA CHAÎNE ENTRE PLANS : le résultat qui descend doit être un atout OU un
-     fardeau, jamais neutre.
-
-  ── CE QU'ON NE FAIT PAS (ENCORE), ET POURQUOI ─────────────────────────────────
-  • PAS de générateur de niveaux automatique pour l'instant : prématuré tant que
-    le PLAISIR de jeu n'est pas prouvé. On conçoit les niveaux À LA MAIN.
-  • La génération aléatoire actuelle (genLevel) NE garantit PAS la solubilité :
-    c'est juste du décor de profondeur pour le prototype. Un vrai plan jouable
-    doit être conçu à la main (voir HAND_LEVELS plus bas) ou, plus tard, généré
-    "à l'envers" (partir de la solution et défaire des fusions = solubilité garantie,
-    et le nombre de défaire = curseur de difficulté).
-
-  ── BACKLOG KAIZEN (le fil — toute instance doit le connaître) ─────────────────
-  Six pistes validées avec Gregory, du zéro-code vers la brique. État entre [ ].
-  1. [FAIT v18] L'HORLOGE : un plan où le wrap-around est la clé. La ligne du bas
-     est un CADRAN (pleine = tout glissement est une rotation pure). On choisit la
-     PHASE pour décider quelle pièce s'aligne sur le couloir. Vitrine du wrap,
-     comme le plan 4 l'est pour l'aimant. → PLAN8_HAND.
-  2. [FAIT v18] LE FAUX ORDRE : deux fusions possibles dès le départ, mais la
-     première déclenche un aimant parasite qui vole la pièce-clé de la seconde.
-     L'ordre des fusions devient un CHOIX, pas une exécution. → PLAN9_HAND.
-  3. [FAIT v19] LE MUET : un domino aux faces vierges (face1/face2 = null). Ne
-     fusionne jamais (getExposedFace → null), ne s'aimante jamais — pure masse qui
-     bouche les couloirs. Rendu PIERRE (dalle granit). → PLAN10_HAND "La Digue",
-     où il PROTÈGE par défaut (inversion de l'horloge où le défaut piégeait).
-  4. [FAIT v19] LA PIÈCE COMMANDÉE : objectif "fabriquer telle pièce" (ÉTAT +
-     ICÔNE portée) au lieu de "il reste N". GOAL_BY_BOARD + pastille en haut de
-     l'écran. C'est la pièce commandée elle-même qui migre → supprime la fragilité
-     du compte ET celle du plus-petit-index. → PLAN11_HAND "L'Autel".
-  5. [À FAIRE] LE PASSAGER : le plan N impose l'ICÔNE du résultat qui descend,
-     parce que le plan N+1 en a besoin. Penser deux plans à l'avance — la chaîne
-     devient stratégie, plus seulement narration. (Extension de la pièce commandée.)
-  6. [À FAIRE] LA BÉNÉDICTION : un DEMOTE négatif — une traversée qui ÉLÈVE au
-     lieu de casser. Rare, placée tard dans la pile : après les épreuves, le don.
-
-  ── JOURNAL ────────────────────────────────────────────────────────────────────
-  v19 : LE MUET + LA PIÈCE COMMANDÉE (kaizen 3 et 4), NBOARDS 9→11. La grande
-        nouveauté : LES PLANS 10 ET 11 SONT EMBOÎTÉS — la chaîne devient stratégie.
-        • PLAN 10 "LA DIGUE" : l'entrant du plan 9 est DÉTERMINISTE (emerald
-          line/wave, plan 9 forcé) → il devient un PERSONNAGE, plus du bruit. Un
-          muet fait barrage en col2 entre l'entrant et une proie ('wave'). Ouvrir
-          la digue sans préparer = l'aimant dévore la proie → le plan SE COMPLÈTE
-          QUAND MÊME, mais produit un cosmic line/CHEVRON au lieu de line/LINE.
-          Punition différée : c'est le plan 11 qui jugera. Jamais de blocage dur.
-        • PLAN 11 "L'AUTEL" : COMMANDE = supernovae portant 'line'. Le bon cosmic
-          s'offre à l'autel X en UN TAP (récompense instantanée). Le cosmic
-          gourmand y produit un circle/chevron qui échoue à la commande → chemin
-          de secours toujours ouvert : unir W ('line/line' — l'assurance : toute
-          union W+C porte 'line') et C cosmique. L'ordre cyclique de la ligne 1
-          (W, muet, C) place C toujours à gauche de W : orientation ou jonction
-          verticale requise. La leçon de l'horloge, en filigrane.
-        • Technique : muet = faces null (aucun code de règle à toucher : fusion,
-          aimant et régresseur exigent des faces non-nulles) ; rendu dalle granit
-          dans getDominoTex. checkCompletion : branche GOAL prioritaire — la pièce
-          commandée migre elle-même dès qu'elle existe. Pastille #goalTag (updateUI).
-  v18 : DEUX PLANS NOUVEAUX (kaizen 1 et 2 du backlog), NBOARDS 7→9.
-        • PLAN 8 "L'HORLOGE" : cadran plein en ligne 5, sommet gold en haut de
-          col1, couloir verrouillé. Le sommet absorbe les 4 pèlerins dans le SEUL
-          ordre viable (gold→emerald→cosmic→supernovae→PLASMA) ; la phase du
-          cadran décide qui monte. Piège posé à l'heure par défaut.
-        • PLAN 9 "LE FAUX ORDRE" : deux fusions à un tap chacune ; la mauvaise
-          en premier fait voler la pièce-clé par aimant parasite, sous les yeux
-          du joueur. L'icône qui empoisonne au début ('circle') est la clé du final.
-        • Contrainte découverte : checkCompletion fait migrer la PREMIÈRE pièce
-          restante PAR INDEX → le résultat final d'un plan doit naître à un index
-          < LANDING_IDX (10), sinon c'est l'ENTRANT qui traverse. Les deux plans
-          forment leur final à idx1 / idx0. À retenir pour tout futur plan.
-        • Géométrie clé du design : rot 0 n'expose que haut/bas, rot 90/270 que
-          gauche/droite → une pièce rot 90 dans un couloir vertical est un VERROU
-          parfait (bloque corridorEmpty, ne peut jamais fusionner verticalement).
-  v11 : LA FUSION NE DÉPEND PLUS QUE DE L'ICÔNE (logique du concept premier / index).
-        L'état n'est plus une condition. Résultat = UN CRAN AU-DESSUS DU PLUS HAUT des
-        deux pièces (règle 1A) : blanc+blanc→silver, gold+silver→emerald, gold+gold→
-        emerald. Le BLANC est l'agent de montée, le RÉGRESSEUR son symétrique (anti-blanc)
-        qui fait descendre d'un cran. L'aimant happe sur icône seule (hors régresseur).
-        Retirés (morts) : flash mismatch, getExposedState — l'état ne conditionne plus rien.
-  v10 : Le RÉGRESSEUR est désormais une pièce d'AIMANT comme les autres (magnetMatch).
-        L'aimant le happe vers toute pièce d'état ≥ silver dès que, sur un couloir libre,
-        les FACES EN CONTACT portent la même icône. Le joueur contrôle la rencontre par
-        l'orientation (tap-rotation) puis le slide — pas besoin de le pointer case par
-        case. Tableau-test calé sur la capture (gold + régresseur même ligne, silver
-        dessous). Régression toujours : un cran, consommation, cible tout état ≥ silver.
-  v9 : DOMINO RÉGRESSEUR (outil volontaire de descente d'état). Nouveau type de pièce
-       neutre (flag regress, 6e champ des DEMOS), icônes GRISES plus épaisses, distinct des autres. Au
-       CONTACT ICÔNE avec une pièce d'état ≥ silver (fusion volontaire, mêmes règles de
-       contact que les fusions normales), il fait DESCENDRE la cible d'UN CRAN et se
-       CONSOMME. Priorité sur la fusion montante. But : débloquer une pièce montée trop
-       haut sans partenaire de son état, pour la réapparier. N'agit jamais par accident
-       (pas d'auto-aimant sur le régresseur ; contact provoqué par le joueur). HEAD_LEVEL
-       transformé en tableau-test : gold bloqué + régresseur à amener par slide horizontal.
-  v8 : RETOUR AU CUBE TOURNANT (façon mada, SANS PORTE). Les NBOARDS tableaux sont
-       disposés sur les faces latérales d'un cube (groupe par face, azimut f*90°). La
-       transition entre tableaux tourne cubeGroup de 90° sur Y (slerp) pour amener la
-       face voisine devant la caméra. RADIUS calé pour que la face courante retombe
-       exactement à Z=0 (cadrage identique aux versions plates). Complétion auto +
-       LANDING_IDX conservés (portage simple). Le flip v7 est abandonné (gardé en tête).
-  v6 : ABANDON DU STACK VISUEL. Un seul plan visible à la fois (plus de plans fantômes
-       empilés en profondeur). À la migration, le plan suivant ARRIVE DE LOIN (part au
-       fond, ARRIVE_Z, et fonce jusqu'en position de tête) pendant que le plan résolu
-       se fond en filant vers la caméra. slotZ/STACK_GAP/atténuation-profondeur retirés.
-  v5 : UNDO illimité (snapshot d'état complet, bouton ↶ bas-droite + Ctrl/Cmd+Z) ;
-       PLAN 4 conçu main "l'aimant comme clé" (résolution par ouverture de couloir,
-       vitrine de l'attraction) ; leurre du plan 2 rendu réellement tentant (circle
-       partagé) ; feedback rouge sur contact même-icône / état-différent (palier non
-       franchi, lisible sans tutoriel).
-
-  ── RÈGLES DE TRAVAIL DE GREGORY ───────────────────────────────────────────────
-  • Analyser les captures en détail avant de coder ; attendre confirmation.
-  • Modifier UNIQUEMENT ce qui est demandé (ne pas toucher logo/menu/disposition).
-  • Versionner v1/v2/v3… ; si un fichier uploadé manque, STOP et redemander.
-═══════════════════════════════════════════════════════════════════════════════
--->
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ADAM Stack — v19 · Le Muet & La Pièce Commandée (la chaîne devient stratégie)</title>
+<title>ADAM Grid — v10 · 5×9</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    background:#000000; min-height:100vh;
-    display:flex; flex-direction:column; justify-content:center; align-items:center;
-    font-family:'SF Mono','Fira Code',monospace; color:rgba(220,220,235,0.9);
-    overflow:hidden; user-select:none;
-  }
-  #c { position:fixed; top:0; left:0; width:100vw; height:100vh; display:block; touch-action:none; cursor:default; }
-  .info-bar { display:flex; gap:16px; margin-top:10px; font-size:0.65rem; color:rgba(180,180,200,0.5); letter-spacing:0.1em; }
-  .info-bar span { color:rgba(220,220,235,0.8); }
-  .nav-dots { position:fixed; bottom:calc(env(safe-area-inset-bottom, 0px) + 22px); left:50%; transform:translateX(-50%); display:flex; gap:7px; z-index:200; }
-  .nav-dot { width:8px; height:8px; border-radius:50%; background:rgba(34,211,238,0.15); transition:all 0.35s; cursor:pointer; }
-  .nav-dot.active { background:rgba(34,211,238,0.7); box-shadow:0 0 9px rgba(34,211,238,0.5); }
-  .hint { margin-top:6px; font-size:0.5rem; color:rgba(180,180,200,0.3); letter-spacing:0.12em; }
-  .ctrl-row { display:flex; gap:8px; margin-top:8px; }
-  .dbtn { background:transparent; border:1px solid rgba(34,211,238,0.3); color:rgba(34,211,238,0.55);
-    padding:5px 14px; border-radius:7px; cursor:pointer; font-size:0.6rem; font-family:inherit; letter-spacing:0.08em; }
-  .dbtn:hover { border-color:#22d3ee; color:#22d3ee; }
-  .legend { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; max-width:560px; justify-content:center;
-    font-size:0.52rem; color:rgba(180,180,200,0.5); }
-  .legend-item { display:flex; align-items:center; gap:4px; padding:3px 8px; border-radius:6px;
-    border:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02); }
-  .legend-dot { width:8px; height:8px; border-radius:50%; }
-  .goal-tag { position:fixed; top:calc(env(safe-area-inset-top, 0px) + 14px); left:50%; transform:translateX(-50%);
-    display:none; align-items:center; gap:4px; z-index:210; padding:6px 12px; border-radius:9px;
-    background:rgba(22,23,38,0.88); border:1px solid rgba(255,255,255,0.12); backdrop-filter:blur(4px);
-    font-size:0.58rem; letter-spacing:0.14em; color:rgba(220,220,235,0.75); pointer-events:none; }
-  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(60px);
-    background:rgba(22,23,38,0.95); border:1px solid rgba(255,255,255,0.07); border-radius:8px;
-    padding:8px 16px; font-size:0.7rem; transition:transform 0.25s ease-out; z-index:300; pointer-events:none; }
-  .toast.show { transform:translateX(-50%) translateY(0); }
-  .undo-btn { position:fixed; bottom:calc(env(safe-area-inset-bottom, 0px) + 16px); right:18px; z-index:200;
-    width:46px; height:46px; border-radius:50%; background:rgba(22,23,38,0.85);
-    border:1px solid rgba(34,211,238,0.3); color:rgba(34,211,238,0.7); font-size:1.35rem; line-height:1;
-    cursor:pointer; display:flex; align-items:center; justify-content:center; font-family:inherit;
-    transition:all 0.2s; backdrop-filter:blur(4px); padding:0; }
-  .undo-btn:hover { border-color:#22d3ee; color:#22d3ee; }
-  .undo-btn:active { transform:scale(0.92); }
-  .undo-btn:disabled { opacity:0.25; cursor:default; border-color:rgba(34,211,238,0.12); }
-  .opt-btn { position:fixed; bottom:calc(env(safe-area-inset-bottom, 0px) + 16px); right:74px; z-index:200;
-    width:46px; height:46px; border-radius:50%; background:rgba(22,23,38,0.85);
-    border:1px solid rgba(34,211,238,0.3); color:rgba(34,211,238,0.7); font-size:1.2rem; line-height:1;
-    cursor:pointer; display:flex; align-items:center; justify-content:center; font-family:inherit;
-    transition:all 0.2s; backdrop-filter:blur(4px); padding:0; }
-  .opt-btn:hover { border-color:#22d3ee; color:#22d3ee; }
-  .opt-btn:active { transform:scale(0.92); }
-  .opt-btn.off { color:rgba(34,211,238,0.3); border-color:rgba(34,211,238,0.15); }
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--side:10px;--gap:6px;--grid-w:calc(100vw - var(--side)*2);--cell:calc((var(--grid-w) - var(--gap)*4)/5);--grid-h:calc(var(--cell)*9 + var(--gap)*8)}
+html,body{height:100%;overflow:hidden;touch-action:none}
+body{background:#12131a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;user-select:none;color:rgba(180,180,190,0.5)}
+#c{width:var(--grid-w);max-width:var(--grid-w);height:min(var(--grid-h),calc(100vh - var(--side)*2));touch-action:none;cursor:default;border-radius:4px}
+.top-bar{position:fixed;top:env(safe-area-inset-top,8px);left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:4px;z-index:10;background:transparent;padding:6px 0 8px}
+.logo{display:flex;align-items:center;gap:4px;height:36px;cursor:pointer}
+.logo-icon{width:32px;height:32px}
+.logo-icon svg{width:100%;height:100%}
+.logo-icon svg path,.logo-icon svg line,.logo-icon svg rect,.logo-icon svg polygon{stroke:rgba(240,240,250,0.9);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;fill:none;filter:drop-shadow(0 0 8px rgba(240,240,250,0.4))}
+.nav-row{display:flex;gap:6px;align-items:center}
+.nav-dot{width:8px;height:8px;border-radius:50%;background:rgba(180,180,190,0.2);transition:all 0.3s;cursor:pointer}
+.nav-dot.active{background:rgba(126,200,227,0.7);box-shadow:0 0 8px rgba(126,200,227,0.4)}
+.nav-label{font-size:0.65rem;color:rgba(126,200,227,0.4);letter-spacing:0.15em}
+.ctrl-row{display:flex;gap:8px}
+.dbtn{background:transparent;border:1px solid rgba(180,180,190,0.25);color:rgba(180,180,190,0.5);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:0.7rem;font-family:inherit;letter-spacing:0.05em}
+.dbtn:hover{border-color:rgba(180,180,190,0.5);color:rgba(180,180,190,0.8)}
+.floating-pts{position:fixed;pointer-events:none;font-size:1.2rem;font-weight:bold;color:#ffd700;text-shadow:0 0 10px rgba(255,215,0,0.8);animation:floatUp 1s ease-out forwards;z-index:1000}
+@keyframes floatUp{0%{opacity:1;transform:translateY(0) scale(1)}100%{opacity:0;transform:translateY(-60px) scale(1.3)}}
 </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div class="nav-dots" id="navDots"></div>
-  <button id="undoBtn" class="undo-btn" aria-label="Annuler">↶</button>
-  <button id="medBtn" class="opt-btn" aria-label="Médianes">▤</button>
-  <div class="toast" id="toast"></div>
-  <div class="goal-tag" id="goalTag"></div>
-
+<div class="top-bar">
+ <div class="logo" id="logo">
+  <div class="logo-icon"><svg viewBox="0 0 36 36"><path d="M8 26L18 10L28 26"/></svg></div>
+  <div class="logo-icon"><svg viewBox="0 0 36 36"><polygon points="10,10 26,18 10,26"/></svg></div>
+  <div class="logo-icon"><svg viewBox="0 0 36 36"><path d="M8 26L18 10L28 26"/></svg></div>
+  <div class="logo-icon"><svg viewBox="0 0 36 36"><line x1="10" y1="8" x2="10" y2="28"/><line x1="18" y1="8" x2="18" y2="28"/><line x1="26" y1="8" x2="26" y2="28"/></svg></div>
+ </div>
+ <div class="nav-row">
+  <span class="nav-label" id="navLabel">T1</span>
+  <div id="navDots" style="display:flex;gap:5px"></div>
+ </div>
+ <div class="ctrl-row">
+  <button class="dbtn" id="btnUndo">Undo</button>
+  <button class="dbtn" id="btnReset">Reset</button>
+ </div>
+</div>
+<canvas id="c"></canvas>
+<!-- score masqué mais éléments conservés pour le JS -->
+<div style="display:none"><span id="scoreVal">0</span><span id="comboVal">×1</span><span id="bestVal">0</span></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const COLS=5, ROWS=9, TOTAL=COLS*ROWS, CELL_W=1.0, NBOARDS=1;
-
-const STATE_ORDER=['white','silver','gold','emerald','cosmic','supernovae','plasma'];
-const MOVE_DIRS={ white:null, silver:[[1,0],[-1,0]], gold:[[1,1],[1,-1],[-1,1],[-1,-1]],
-  emerald:[[0,1],[0,-1]], cosmic:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
-  supernovae:[[1,0],[-1,0],[0,1],[0,-1]], plasma:[[1,0],[-1,0],[0,1],[0,-1]] };
-function canMove(p){ return p && p.state!=='white'; }
-
-
-
-// ─── MOTEUR DE TEXTURE SVG (PORTÉ À L'IDENTIQUE DE prisme.html) ───
-// Le domino est dessiné en SVG (viewBox 0 0 90 90), la ROTATION est appliquée DANS le SVG
-// (rotate(r,45,45)) puis rasterisée sur canvas avec marge maîtrisée → médiane jamais débordante,
-// bordures/glow/séparateur identiques à prisme. f1 = demi haut, f2 = demi bas (translate 0,45).
+const COLS=5,ROWS=9,TOTAL=45,PORTE_POSITIONS=[22],NUM_FACES=2;
+const isPorte=i=>PORTE_POSITIONS.includes(i);
+const STATE_ORDER=['white','silver','gold','emerald','cosmic','supernovae'];
+const STATE_MULT={white:1,silver:2,gold:3,emerald:5,cosmic:10,supernovae:20};
+const PTS={simple:100,twin:1000};
+const GAP=1.08,HALF=0.52,SAT_DEPTH=0.06,SAT_LIFT=0.08;
+const FACE_ROT=[0,Math.PI/2];
+const CAM_Z_MIN=4,CAM_Z_MAX=20;
+const BANK=['chevron','circle','twoCircles','line','threeLines','twoPoints','square','wave'];
+const SEEDS=[12345,67890];
 const ICO={
  chevron:{f1:'M20 32L45 12L70 32',f2:'M20 12L45 32L70 12',t:'path'},
  circle:{f1:'45,22,12',f2:'45,22,12',t:'circle'},
+ twoCircles:{f1:'30,22,8|60,22,8',f2:'30,22,8|60,22,8',t:'circles'},
  line:{f1:'15,22,75,22',f2:'15,22,75,22',t:'line'},
- wave:{f1:'M 29 22 Q 29 12 37 12 Q 45 12 45 22 Q 45 32 53 32 Q 61 32 61 22 Q 61 12 53 12 Q 45 12 45 22 Q 45 32 37 32 Q 29 32 29 22 Z',f2:'M 29 22 Q 29 12 37 12 Q 45 12 45 22 Q 45 32 53 32 Q 61 32 61 22 Q 61 12 53 12 Q 45 12 45 22 Q 45 32 37 32 Q 29 32 29 22 Z',t:'path'}
+ threeLines:{f1:'25,10,25,34|45,10,45,34|65,10,65,34',f2:'25,10,25,34|45,10,45,34|65,10,65,34',t:'lines'},
+ twoPoints:{f1:'30,22,4|60,22,4',f2:'30,22,4|60,22,4',t:'points'},
+ square:{f1:'25,10,40,24,3',f2:'25,10,40,24,3',t:'rect'},
+ wave:{f1:'M10 22Q28 6 45 22Q62 38 80 22',f2:'M10 22Q28 6 45 22Q62 38 80 22',t:'path'}
 };
 function renderIcoSVG(name,f2){
- const d=ICO[name]; if(!d)return''; const data=f2?d.f2:d.f1;
+ const d=ICO[name];if(!d)return'';const data=f2?d.f2:d.f1;
  if(d.t==='path')return`<path class="i" d="${data}"/>`;
  if(d.t==='circle'){const[cx,cy,r]=data.split(',');return`<circle class="i" cx="${cx}" cy="${cy}" r="${r}"/>`;}
  if(d.t==='line'){const[x1,y1,x2,y2]=data.split(',');return`<line class="i" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;}
- return'';
+ if(d.t==='rect'){const[x,y,w,h,rx]=data.split(',');return`<rect class="i" x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}"/>`;}
+ return data.split('|').map(p=>{const v=p.split(',');
+  if(d.t==='circles')return`<circle class="i" cx="${v[0]}" cy="${v[1]}" r="${v[2]}"/>`;
+  if(d.t==='points')return`<circle class="p" cx="${v[0]}" cy="${v[1]}" r="${v[2]}"/>`;
+  return`<line class="i" x1="${v[0]}" y1="${v[1]}" x2="${v[2]}" y2="${v[3]}"/>`;
+ }).join('');
 }
-// Palette de texture (STC) portée du prisme + plasma (état max de la stack, absent du prisme).
 const STC={
- white:{border:'rgba(210,210,220,0.7)',icon:'rgba(210,210,220,0.7)',pt:'rgba(210,210,220,0.7)',sep:'rgba(210,210,220,0.55)',flt:'',bw:1},
+ white:{border:'rgba(180,180,190,0.35)',icon:'rgba(180,180,190,0.35)',pt:'rgba(180,180,190,0.35)',sep:'rgba(180,180,190,0.3)',flt:'',bw:1},
  silver:{border:'rgba(6,182,212,0.6)',icon:'#22d3ee',pt:'#22d3ee',sep:'rgba(34,211,238,0.4)',flt:'drop-shadow(0 0 2px rgba(34,211,238,0.4))',bw:1},
  gold:{border:'rgba(255,215,0,0.7)',icon:'#ffd700',pt:'#ffd700',sep:'rgba(255,215,0,0.4)',flt:'drop-shadow(0 0 4px rgba(255,215,0,0.6))',bw:1},
  emerald:{border:'rgba(52,211,153,0.9)',icon:'#34d399',pt:'#34d399',sep:'rgba(52,211,153,0.6)',flt:'drop-shadow(0 0 6px rgba(52,211,153,0.9))',bw:1},
  cosmic:{border:'rgba(131,56,236,0.7)',icon:'#c4b5fd',pt:'#c4b5fd',sep:'rgba(196,181,253,0.6)',flt:'drop-shadow(0 0 6px rgba(131,56,236,0.7))',bw:2},
  supernovae:{border:'rgba(255,140,0,0.7)',icon:'#ffeb3b',pt:'#ffeb3b',sep:'rgba(255,235,59,0.6)',flt:'drop-shadow(0 0 6px rgba(255,215,0,0.7))',bw:3},
- plasma:{border:'rgba(255,32,96,0.75)',icon:'#ff2060',pt:'#ff2060',sep:'rgba(255,32,96,0.5)',flt:'drop-shadow(0 0 7px rgba(255,32,96,0.8))',bw:3}
+ ice:{border:'rgba(220,235,248,0.45)',icon:'rgba(220,235,248,0.7)',pt:'rgba(220,235,248,0.7)',sep:'rgba(220,235,248,0.25)',flt:'drop-shadow(0 0 4px rgba(220,235,248,0.4))',bw:1}
 };
-const _texCache={};
-let showMedians=false;
-function getDominoTex(f1,f2,rot,state,regress){
- const k=f1+'|'+f2+'|'+rot+'|'+state+'|'+(regress?'R':'')+'|'+(showMedians?'M':''); if(_texCache[k])return _texCache[k];
- const c=STC[state]||STC.white, r=((rot||0)%360+360)%360;
- const ic = regress ? 'rgba(110,110,122,1)' : c.icon;
- const iw = regress ? 4.6 : 2;
- // LE MUET (kaizen 3) : aucune face (f1 et f2 null) → dalle de PIERRE. Aucune règle
- // à toucher : fusion, aimant et régresseur exigent des faces non-nulles.
- const mute = !f1 && !f2;
- const top=renderIcoSVG(f1,false), bot=renderIcoSVG(f2,true);
- const inner = mute
-  ? `<rect x="13" y="7" width="64" height="76" rx="10" fill="rgba(56,57,66,0.94)" stroke="rgba(124,126,140,0.55)" stroke-width="2.5"/>
-     <path d="M28 22 L43 36 L36 50 M50 58 L60 70 M55 18 L62 28" stroke="rgba(28,28,36,0.85)" stroke-width="2.2" fill="none" stroke-linecap="round"/>`
-  : `${showMedians?'<line class="s" x1="0" y1="45" x2="90" y2="45"/>':''}<g>${top}</g><g transform="translate(0,45)">${bot}</g>`;
+// SVG → CanvasTexture
+const _tc={};
+function getDominoTex(f1,f2,rot,state){
+ const k=f1+'|'+f2+'|'+rot+'|'+state;if(_tc[k])return _tc[k];
+ const c=STC[state]||STC.white,r=((rot||0)%360+360)%360;
+ const top=renderIcoSVG(f1,false),bot=renderIcoSVG(f2,true);
  const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 90">
-  <style>.i{stroke:${ic};stroke-width:${iw};stroke-linecap:round;stroke-linejoin:round;fill:none;${regress?'':(c.flt?'filter:'+c.flt:'')}}.p{fill:${ic};${regress?'':(c.flt?'filter:'+c.flt:'')}}.s{stroke:${c.sep};stroke-width:1}</style>
-  <g transform="rotate(${r},45,45)">${inner}</g></svg>`;
- const S=256, cv=document.createElement('canvas'); cv.width=S; cv.height=S;
+  <style>.i{stroke:${c.icon};stroke-width:2;stroke-linecap:round;stroke-linejoin:round;fill:none;${c.flt?'filter:'+c.flt:''}}.p{fill:${c.pt};${c.flt?'filter:'+c.flt:''}}.s{stroke:${c.sep};stroke-width:1}</style>
+  <g transform="rotate(${r},45,45)"><line class="s" x1="0" y1="45" x2="90" y2="45"/><g>${top}</g><g transform="translate(0,45)">${bot}</g></g></svg>`;
+ const S=256,cv=document.createElement('canvas');cv.width=S;cv.height=S;
  const ctx=cv.getContext('2d');
- const tex=new THREE.CanvasTexture(cv); tex.needsUpdate=false;
+ const tex=new THREE.CanvasTexture(cv);tex.needsUpdate=false;
  const blob=new Blob([svg],{type:'image/svg+xml;charset=utf-8'});
  const url=URL.createObjectURL(blob);
  const img=new Image();
  img.onload=()=>{
   const m=4,rd=36;
-  ctx.fillStyle='rgba(0,0,0,0.95)';
+  ctx.fillStyle='rgba(18,19,26,0.95)';
   ctx.beginPath();ctx.moveTo(m+rd,m);ctx.lineTo(S-m-rd,m);ctx.quadraticCurveTo(S-m,m,S-m,m+rd);ctx.lineTo(S-m,S-m-rd);ctx.quadraticCurveTo(S-m,S-m,S-m-rd,S-m);ctx.lineTo(m+rd,S-m);ctx.quadraticCurveTo(m,S-m,m,S-m-rd);ctx.lineTo(m,m+rd);ctx.quadraticCurveTo(m,m,m+rd,m);ctx.closePath();ctx.fill();
+  ctx.strokeStyle=c.border;ctx.lineWidth=c.bw;
+  ctx.beginPath();ctx.moveTo(m+rd,m);ctx.lineTo(S-m-rd,m);ctx.quadraticCurveTo(S-m,m,S-m,m+rd);ctx.lineTo(S-m,S-m-rd);ctx.quadraticCurveTo(S-m,S-m,S-m-rd,S-m);ctx.lineTo(m+rd,S-m);ctx.quadraticCurveTo(m,S-m,m,S-m-rd);ctx.lineTo(m,m+rd);ctx.quadraticCurveTo(m,m,m+rd,m);ctx.closePath();ctx.stroke();
   ctx.drawImage(img,m+2,m+2,S-m*2-4,S-m*2-4);
   tex.needsUpdate=true;URL.revokeObjectURL(url);
  };
- img.src=url;_texCache[k]=tex;return tex;
+ img.src=url;_tc[k]=tex;return tex;
 }
+// ══ JEU ══
+let allDom=[[],[]],allHist=[[],[]],allScoreHist=[[],[]];
+let score=0,bestScore=0,comboCount=0,lastFusionTime=0;
+let fusionCounts={silver:0,gold:0,emerald:0,cosmic:0,supernovae:0};
+function srand(seed){let s=seed;return()=>{s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};}
+function initFace(fi){const rng=srand(SEEDS[fi]);allDom[fi]=Array.from({length:TOTAL},(_,i)=>{if(isPorte(i))return null;const x=i%COLS,y=Math.floor(i/COLS);return{face1:BANK[Math.floor(rng()*BANK.length)],face2:BANK[Math.floor(rng()*BANK.length)],rotation:((x+y)%2===0)?0:90,state:'white'};});allHist[fi]=[];allScoreHist[fi]=[];}
+// Getter: lit la case (les portes sont dans allDom comme les autres)
+function getDom(fi,i){return allDom[fi]?allDom[fi][i]:null;}
+// Setter: écrit la case. Si position-porte, propage à tous les layers (liaison)
+function setDom(fi,i,v){
+ if(isPorte(i)){
+  for(let f=0;f<NUM_FACES;f++)allDom[f][i]=v?{...v}:null;
+  updCubeTexFromPorte();
+ }else{
+  allDom[fi][i]=v;
+ }
+}
+function getPos(i){return{x:i%COLS,y:Math.floor(i/COLS)};}
+function getIdx(x,y){return(x<0||x>=COLS||y<0||y>=ROWS)?-1:y*COLS+x;}
+function getExposed(dm,dir){if(!dm)return null;const r=((dm.rotation%360)+360)%360;const m={0:{top:'face1',bottom:'face2'},90:{left:'face2',right:'face1'},180:{top:'face2',bottom:'face1'},270:{left:'face1',right:'face2'}};return m[r]?.[dir]?dm[m[r][dir]]:null;}
+function getRemaining(dm,ed){if(!dm)return null;const r=((dm.rotation%360)+360)%360;const m={0:{top:'face2',bottom:'face1'},90:{right:'face2',left:'face1'},180:{top:'face1',bottom:'face2'},270:{right:'face1',left:'face2'}};return m[r]?.[ed]?dm[m[r][ed]]:null;}
+function areTwins(a,b){if(!a||!b)return false;const r1=((a.rotation%360)+360)%360,r2=((b.rotation%360)+360)%360;if(r1===r2&&a.face1===b.face1&&a.face2===b.face2)return true;if(Math.abs(r1-r2)===180&&a.face1===b.face2&&a.face2===b.face1)return true;return false;}
+// ══ THREE ══
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});renderer.setClearColor(0x12131a);
+const scene=new THREE.Scene();const camera=new THREE.PerspectiveCamera(50,1,0.1,100);
+scene.add(new THREE.AmbientLight(0xffffff,0.8));
+function resize(){const c=canvas;const w=c.clientWidth,h=c.clientHeight;renderer.setSize(w,h);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));camera.aspect=w/h;camera.updateProjectionMatrix();}
+resize();window.addEventListener('resize',resize);
+const cubeGroup=new THREE.Group();scene.add(cubeGroup);
+// Porte cube
+const pMats=[];for(let i=0;i<6;i++)pMats.push(new THREE.MeshBasicMaterial({transparent:true}));
+const pMesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),pMats);pMesh.userData.isCube=true;cubeGroup.add(pMesh);
+function updCubeTexFromPorte(){
+ // Affiche le domino-porte principal (index 7) sur le cube central
+ // Comme les portes sont synchronisées, on lit depuis allDom[0]
+ const PORTE_DISPLAY=PORTE_POSITIONS[0];
+ const p=allDom[0]?allDom[0][PORTE_DISPLAY]:null;
+ const st=p?p.state:'white';
+ const t=p?getDominoTex(p.face1,p.face2,p.rotation,st):null;
+ pMats.forEach(m=>{m.map=t;m.opacity=p?1:0;m.needsUpdate=true;});
+}
+updCubeTexFromPorte();
+// Halo
+const hcv=document.createElement('canvas');hcv.width=256;hcv.height=256;const hx=hcv.getContext('2d');
+const hg=hx.createRadialGradient(128,128,0,128,128,128);
+hg.addColorStop(0,'rgba(220,235,248,0.25)');hg.addColorStop(0.3,'rgba(200,220,240,0.12)');hg.addColorStop(0.6,'rgba(180,210,235,0.04)');hg.addColorStop(1,'rgba(180,210,235,0)');
+hx.fillStyle=hg;hx.fillRect(0,0,256,256);
+const haloMat=new THREE.SpriteMaterial({map:new THREE.CanvasTexture(hcv),transparent:true,opacity:0.7,depthWrite:false});
+const haloSpr=new THREE.Sprite(haloMat);haloSpr.scale.set(2.5,2.5,1);cubeGroup.add(haloSpr);
+// Sat mesh
+function rrS(w,h,r){const s=new THREE.Shape(),hw=w/2,hh=h/2;s.moveTo(-hw+r,-hh);s.lineTo(hw-r,-hh);s.quadraticCurveTo(hw,-hh,hw,-hh+r);s.lineTo(hw,hh-r);s.quadraticCurveTo(hw,hh,hw-r,hh);s.lineTo(-hw+r,hh);s.quadraticCurveTo(-hw,hh,-hw,hh-r);s.lineTo(-hw,-hh+r);s.quadraticCurveTo(-hw,-hh,-hw+r,-hh);return s;}
+function mkSat(){
+ const g=new THREE.Group(),SZ=1,R=0.15;
+ const n=new THREE.Mesh(new THREE.PlaneGeometry(SZ,SZ),new THREE.MeshBasicMaterial({transparent:true,side:THREE.DoubleSide}));n.position.z=SAT_DEPTH/2+0.001;g.add(n);
+ const bg=new THREE.ExtrudeGeometry(rrS(SZ,SZ,R),{depth:SAT_DEPTH,bevelEnabled:false});bg.translate(0,0,-SAT_DEPTH/2);
+ g.add(new THREE.Mesh(bg,[new THREE.MeshBasicMaterial({color:0x0e0f18,transparent:true,opacity:0.3}),new THREE.MeshBasicMaterial({color:0x141520,transparent:true,opacity:0.45})]));
+ const el=new THREE.LineSegments(new THREE.EdgesGeometry(bg,15),new THREE.LineBasicMaterial({color:0xb4b4be,transparent:true,opacity:0.15}));g.add(el);
+ const sc=document.createElement('canvas');sc.width=128;sc.height=128;const sx=sc.getContext('2d');const sg=sx.createRadialGradient(64,64,10,64,64,60);sg.addColorStop(0,'rgba(0,0,0,0.3)');sg.addColorStop(0.5,'rgba(0,0,0,0.1)');sg.addColorStop(1,'rgba(0,0,0,0)');sx.fillStyle=sg;sx.fillRect(0,0,128,128);
+ const sm=new THREE.Mesh(new THREE.PlaneGeometry(SZ*1.2,SZ*1.2),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(sc),transparent:true,opacity:0.45,depthWrite:false}));sm.position.z=-SAT_DEPTH/2-SAT_LIFT+0.005;g.add(sm);
+ const gl=new THREE.Mesh(new THREE.ShapeGeometry(rrS(SZ+0.06,SZ+0.06,R+0.03)),new THREE.MeshBasicMaterial({color:0x7ec8e3,transparent:true,opacity:0}));gl.position.z=-SAT_DEPTH/2-0.005;g.add(gl);
+ // Ring pour bordure arc-en-ciel (cosmic/supernovae)
+ const rCv=document.createElement('canvas');rCv.width=256;rCv.height=256;
+ const rTex=new THREE.CanvasTexture(rCv);
+ const rMesh=new THREE.Mesh(new THREE.PlaneGeometry(SZ,SZ),new THREE.MeshBasicMaterial({map:rTex,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide}));
+ rMesh.position.z=SAT_DEPTH/2+0.003;g.add(rMesh);
+ // Glow sprite pour halo large
+ const gCv=document.createElement('canvas');gCv.width=128;gCv.height=128;
+ const gTex=new THREE.CanvasTexture(gCv);
+ const gSpr=new THREE.Sprite(new THREE.SpriteMaterial({map:gTex,transparent:true,opacity:0,depthWrite:false}));
+ gSpr.scale.set(SZ*1.6,SZ*1.6,1);g.add(gSpr);
+ g.userData={numMesh:n,edgeLines:el,glowMesh:gl,ringCanvas:rCv,ringTex:rTex,ringMesh:rMesh,haloCanvas:gCv,haloTex:gTex,haloSprite:gSpr,isSat:true};return g;
+}
+const sats=[];
+function g2l(gx,gy){return{x:(gx-2)*GAP,y:-(gy-4)*GAP};}
+function placeSat(s,q){s.mesh.position.copy(new THREE.Vector3(s.lx,s.ly,HALF+SAT_LIFT).applyQuaternion(q));s.mesh.quaternion.copy(q);s.baseQuat=q.clone();}
+function faceQuat(faceRotIdx){return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),FACE_ROT[faceRotIdx]);}
+function buildSats(){sats.forEach(s=>cubeGroup.remove(s.mesh));sats.length=0;for(let fi=0;fi<NUM_FACES;fi++){for(let i=0;i<TOTAL;i++){if(isPorte(i)&&fi!==0)continue;const dm=getDom(fi,i);if(!dm)continue;const{x,y}=getPos(i);const p=g2l(x,y);const m=mkSat();m.visible=false;cubeGroup.add(m);sats.push({gi:i,tab:fi,lx:p.x,ly:p.y,mesh:m,baseQuat:null});}}}
+function rebuildFace(fi){const old=sats.filter(s=>s.tab===fi&&(!isPorte(s.gi)||fi===0));old.forEach(s=>{cubeGroup.remove(s.mesh);sats.splice(sats.indexOf(s),1);});for(let i=0;i<TOTAL;i++){if(isPorte(i)&&fi!==0)continue;const dm=getDom(fi,i);if(!dm)continue;const{x,y}=getPos(i);const p=g2l(x,y);const m=mkSat();m.visible=false;cubeGroup.add(m);sats.push({gi:i,tab:fi,lx:p.x,ly:p.y,mesh:m,baseQuat:null});}}
+function updSatTex(s){const d=getDom(s.tab,s.gi);if(!d){s.mesh.visible=false;return;}const t=getDominoTex(d.face1,d.face2,d.rotation,d.state||'white');s.mesh.userData.numMesh.material.map=t;s.mesh.userData.numMesh.material.needsUpdate=true;const st=d.state||'white';const col=st==='cosmic'?0x8338ec:st==='supernovae'?0xff8c00:st==='emerald'?0x34d399:st==='gold'?0xffd700:st==='silver'?0x06b6d4:0xb4b4be;s.mesh.userData.edgeLines.material.color.set(col);s.mesh.userData.edgeLines.material.opacity=st==='white'?0.12:0.3;}
+// ══ NAV ══
+let currentIdx=0,isNav=false,busy=false,navDir=0,navAxis='y',targetQuat=new THREE.Quaternion(),targetCamX=0,targetCamZ=11;
+function mod(n){return((n%NUM_FACES)+NUM_FACES)%NUM_FACES;}
+function assignFaces(){
+ const qFront=new THREE.Quaternion();
+ const qRight=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/2);
+ const qLeft=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
+ const qTop=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),-Math.PI/2);
+ const qBot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
+ const ci=mod(currentIdx);
+ sats.forEach(s=>{
+  if(isPorte(s.gi)){placeSat(s,qFront);s.mesh.visible=!!getDom(0,s.gi);if(s.mesh.parent!==cubeGroup)cubeGroup.attach(s.mesh);return;}
+  if(s.tab===ci){placeSat(s,qFront);if(s.mesh.parent!==cubeGroup)cubeGroup.attach(s.mesh);}
+ });
+}
+function refreshZoom(){
+ const gridH=(ROWS-1)*GAP+1;
+ const vFov=camera.fov*Math.PI/180;
+ targetCamZ=gridH/2/Math.tan(vFov/2)+1.2;
+ targetCamX=0;
+}
+function navRight(){if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='y';
+ const qR=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/2);
+ const ni=mod(currentIdx+1);
+ sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qR);});
+ targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
+ sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
+function navLeft(){if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='y';
+ const qL=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
+ const ni=mod(currentIdx-1);
+ sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qL);});
+ targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/2);
+ sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
+function navUp(){if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='x';
+ const qTop=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),-Math.PI/2);
+ const ni=mod(currentIdx+1);
+ sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qTop);});
+ targetQuat.setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
+ sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
+function navDown(){if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='x';
+ const qBot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
+ const ni=mod(currentIdx-1);
+ sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qBot);});
+ targetQuat.setFromAxisAngle(new THREE.Vector3(1,0,0),-Math.PI/2);
+ sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
+function onNavDone(){currentIdx=mod(currentIdx+navDir);cubeGroup.quaternion.identity();targetQuat.identity();navDir=0;navAxis='y';assignFaces();isNav=false;busy=false;refreshZoom();updateUI();}
+// ══ GAME ══
+let gameAnim=false;
+function saveState(){const fi=mod(currentIdx);allHist[fi].push({allDom:JSON.parse(JSON.stringify(allDom))});allScoreHist[fi].push(score);if(allHist[fi].length>20){allHist[fi].shift();allScoreHist[fi].shift();}}
+function undo(){const fi=mod(currentIdx);if(!allHist[fi].length||gameAnim||isNav)return;const s=allHist[fi].pop();allDom=s.allDom;score=allScoreHist[fi].pop();rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();updateScore();}
+// Rotation animée par quaternion local, compatible avec le breathing
+let rotAnimActive=null;
+function rotateDom(gi){
+ if(gameAnim||isNav||rotAnimActive)return;
+ const fi=mod(currentIdx),dm=getDom(fi,gi);if(!dm)return;
+ // Pour les portes, le satellite unique est sur tab 0; sinon on cherche sur le layer courant
+ const sat=isPorte(gi)?sats.find(s=>s.tab===0&&s.gi===gi):sats.find(s=>s.tab===fi&&s.gi===gi);
+ if(!sat||!sat.baseQuat)return;
+ saveState();gameAnim=true;
+ const localRot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-Math.PI/2);
+ const startQ=sat.baseQuat.clone();
+ const endQ=sat.baseQuat.clone().multiply(localRot);
+ rotAnimActive={sat,startQ,endQ,elapsed:0,dur:250,gi,fi};
+}
+function rotatePorte(){rotateDom(PORTE_POSITIONS[0]);}
+function updateRotAnim(dt){
+ if(!rotAnimActive)return;
+ rotAnimActive.elapsed+=dt*1000;
+ const p=Math.min(rotAnimActive.elapsed/rotAnimActive.dur,1),e=easeOutCubic(p);
+ rotAnimActive.sat.mesh.quaternion.copy(rotAnimActive.startQ).slerp(rotAnimActive.endQ,e);
+ if(p>=1){
+  const gi=rotAnimActive.gi,fi=rotAnimActive.fi;
+  const dm=getDom(fi,gi);
+  if(dm){
+   dm.rotation=(dm.rotation+90)%360;
+   // Si position-porte, propager la nouvelle rotation à tous les layers
+   if(isPorte(gi)){for(let f=0;f<NUM_FACES;f++)if(f!==fi)allDom[f][gi]={...dm};}
+  }
+  rotAnimActive.sat.mesh.quaternion.copy(rotAnimActive.sat.baseQuat);
+  updSatTex(rotAnimActive.sat);
+  if(isPorte(gi))updCubeTexFromPorte();
+  rotAnimActive=null;
+  gameAnim=false;
+  setTimeout(()=>checkFusions(),50);
+ }
+}
+function detectDiag(dx,dy){const ax=Math.abs(dx),ay=Math.abs(dy);if(ax<15||ay<15||ax/ay<0.5||ax/ay>2)return null;return dy<0?(dx>0?'ur':'ul'):(dx>0?'dr':'dl');}
+function getGroup(x,y,dir){const off={ur:[0,-1],ul:[-1,-1],dr:[0,0],dl:[-1,0]};const[ox,oy]=off[dir],tx=x+ox,ty=y+oy;if(tx<0||tx>COLS-2||ty<0||ty>ROWS-2)return null;return[getIdx(tx,ty),getIdx(tx+1,ty),getIdx(tx,ty+1),getIdx(tx+1,ty+1)];}
+function isCW(dir){return dir==='ur'||dir==='dr';}
+function easeOutCubic(t){return 1-Math.pow(1-t,3);}
+function easeInOutQuad(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
 
-// ─── DESSIN DES ÉTATS RICHES (PORTÉ À L'IDENTIQUE DE prisme) ───
+function execGroupRot(group,cw){
+ if(gameAnim||isNav)return;
+ const fi=mod(currentIdx),d=allDom[fi];
+ saveState();gameAnim=true;
+ const map=cw?[2,0,3,1]:[1,3,0,2];
+ 
+ // Sauvegarder les données logiques AVANT le swap
+ const saved=group.map(i=>getDom(fi,i)?{...getDom(fi,i)}:null);
+ 
+ // Collecter TOUS les satellites qui vont bouger
+ const movers=[];
+ for(let i=0;i<4;i++){
+  const srcIdx=group[i],dstIdx=group[map[i]];
+  const sat=sats.find(s=>s.tab===fi&&s.gi===srcIdx);
+  if(!sat)continue;
+  const tp=getPos(dstIdx),tl=g2l(tp.x,tp.y);
+  const tgtPos=new THREE.Vector3(tl.x,tl.y,HALF+SAT_LIFT);
+  movers.push({sat,mesh:sat.mesh,srcIdx,dstIdx,startPos:sat.mesh.position.clone(),endPos:tgtPos});
+ }
+ 
+ // Animer sur 500ms
+ const dur=500;let elapsed=0;
+ const animStep=(now)=>{
+  if(!animStep._last)animStep._last=now;
+  elapsed+=now-animStep._last;animStep._last=now;
+  const p=Math.min(elapsed/dur,1),e=easeOutCubic(p);
+  movers.forEach(mv=>{
+   mv.mesh.position.lerpVectors(mv.startPos,mv.endPos,e);
+  });
+  if(p<1){requestAnimationFrame(animStep);}
+  else{
+   // Appliquer le swap logique
+   for(let i=0;i<4;i++){
+    const ti=group[map[i]];
+    setDom(fi,ti,saved[i]);
+   }
+   movers.forEach(mv=>{mv.mesh.scale.set(1,1,1);});
+   rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+   gameAnim=false;
+   setTimeout(()=>checkFusions(),50);
+  }
+ };
+ requestAnimationFrame(animStep);
+}
+function addSc(base,states){const now=Date.now();let sm=1;states.forEach(s=>{sm=Math.max(sm,STATE_MULT[s]||1);});if(now-lastFusionTime<2000&&lastFusionTime>0)comboCount++;else comboCount=1;lastFusionTime=now;const cm=1+(comboCount-1)*0.5;const pts=Math.round(base*sm*cm);score+=pts;if(score>bestScore)bestScore=score;updateScore();return pts;}
+function showFP(pts){const el=document.createElement('div');el.className='floating-pts';el.textContent=`+${pts.toLocaleString()}`;el.style.left=(window.innerWidth/2)+'px';el.style.top=(window.innerHeight/2-30)+'px';document.body.appendChild(el);setTimeout(()=>el.remove(),1000);}
+function checkFusions(skipG){
+ if(gameAnim||isNav)return;const fi=mod(currentIdx);
+ // Twin check
+ for(let i=0;i<TOTAL;i++){const di=getDom(fi,i);if(!di)continue;const{x,y}=getPos(i);
+  const iR=getIdx(x+1,y);if(iR!==-1&&getDom(fi,iR)&&areTwins(di,getDom(fi,iR))){doTwin(fi,i,iR,'h');return;}
+  const iB=getIdx(x,y+1);if(iB!==-1&&getDom(fi,iB)&&areTwins(di,getDom(fi,iB))){doTwin(fi,i,iB,'v');return;}
+ }
+ // Chain fusion check (3 dominos alignés)
+ for(let i=0;i<TOTAL;i++){const di=getDom(fi,i);if(!di)continue;const{x,y}=getPos(i);
+  // Horizontal: L-C-R
+  const iL=getIdx(x-1,y),iR=getIdx(x+1,y);
+  if(iL!==-1&&iR!==-1){const dL=getDom(fi,iL),dR=getDom(fi,iR);
+   if(dL&&dR){const fLR=getExposed(dL,'right'),fCL=getExposed(di,'left'),fCR=getExposed(di,'right'),fRL=getExposed(dR,'left');
+    if(fLR&&fCL&&fLR===fCL&&fCR&&fRL&&fCR===fRL){doChainFusion(fi,iL,i,iR,'h');return;}
+   }
+  }
+  // Vertical: T-C-B
+  const iT=getIdx(x,y-1),iB=getIdx(x,y+1);
+  if(iT!==-1&&iB!==-1){const dT=getDom(fi,iT),dB=getDom(fi,iB);
+   if(dT&&dB){const fTB=getExposed(dT,'bottom'),fCT=getExposed(di,'top'),fCB=getExposed(di,'bottom'),fBT=getExposed(dB,'top');
+    if(fTB&&fCT&&fTB===fCT&&fCB&&fBT&&fCB===fBT){doChainFusion(fi,iT,i,iB,'v');return;}
+   }
+  }
+ }
+ // Simple fusion check
+ for(let i=0;i<TOTAL;i++){const di=getDom(fi,i);if(!di)continue;const{x,y}=getPos(i);
+  for(const{ni,d1,d2,dir}of[{ni:getIdx(x+1,y),d1:'right',d2:'left',dir:'h'},{ni:getIdx(x,y+1),d1:'bottom',d2:'top',dir:'v'}]){
+   if(ni===-1)continue;const nb=getDom(fi,ni);if(!nb)continue;
+   const f1=getExposed(di,d1),f2=getExposed(nb,d2);if(f1&&f2&&f1===f2){doFusion(fi,i,ni,d1,d2,dir);return;}
+  }
+ }
+ if(!skipG)applyGrav();
+}
+function doFusion(fi,i1,i2,d1dir,d2dir,dir){
+ gameAnim=true;
+ const dm1=getDom(fi,i1),dm2=getDom(fi,i2);
+ const nf1=getRemaining(dm1,d1dir),nf2=getRemaining(dm2,d2dir);
+ const maxSI=Math.max(STATE_ORDER.indexOf(dm1.state),STATE_ORDER.indexOf(dm2.state));
+ const ns=STATE_ORDER[Math.min(maxSI+1,STATE_ORDER.indexOf('cosmic'))];
+ if(ns!=='white'&&fusionCounts[ns]!==undefined)fusionCounts[ns]++;
+ const pts=addSc(PTS.simple,[dm1.state,dm2.state]);showFP(pts);
+ const newRot=dir==='h'?90:0;
+ const s1=sats.find(s=>s.tab===fi&&s.gi===i1),s2=sats.find(s=>s.tab===fi&&s.gi===i2);
+ if(!s1?.mesh||!s2?.mesh){
+  // Fallback: appliquer la fusion logique sans animation
+  setDom(fi,i1,{face1:nf1||BANK[0],face2:nf2||BANK[0],rotation:newRot,state:ns});
+  setDom(fi,i2,null);
+  rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+  gameAnim=false;setTimeout(()=>checkFusions(),50);return;
+ }
+ const m1=s1.mesh,m2=s2.mesh;
+ const p1s=m1.position.clone(),p2s=m2.position.clone();
+ const mid=p1s.clone().add(p2s).multiplyScalar(0.5);
+ let elapsed=0;const durMove=400,durFade=200,durAppear=400;
+ const moveAnim=(now)=>{
+  if(!moveAnim._last)moveAnim._last=now;
+  elapsed+=now-moveAnim._last;moveAnim._last=now;
+  const p=Math.min(elapsed/durMove,1),e=easeInOutQuad(p);
+  m1.position.lerpVectors(p1s,mid,e);m2.position.lerpVectors(p2s,mid,e);
+  const sc=1-0.3*e;m1.scale.set(sc,sc,sc);m2.scale.set(sc,sc,sc);
+  if(p<1)requestAnimationFrame(moveAnim);
+  else{elapsed=0;moveAnim._last=null;requestAnimationFrame(fadeAnim);}
+ };
+ const fadeAnim=(now)=>{
+  if(!fadeAnim._last)fadeAnim._last=now;
+  elapsed+=now-fadeAnim._last;fadeAnim._last=now;
+  const p=Math.min(elapsed/durFade,1);
+  m1.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  m2.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  if(p<1)requestAnimationFrame(fadeAnim);
+  else{
+   const res={face1:nf1||BANK[0],face2:nf2||BANK[0],rotation:newRot,state:ns};
+   setDom(fi,i1,res);
+   setDom(fi,i2,null);
+   rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+   const newS=sats.find(s=>s.tab===fi&&s.gi===i1);
+   if(newS){newS.mesh.scale.set(0.3,0.3,0.3);elapsed=0;fadeAnim._last=null;
+    const appearAnim=(now2)=>{
+     if(!appearAnim._last)appearAnim._last=now2;
+     elapsed+=now2-appearAnim._last;appearAnim._last=now2;
+     const p2=Math.min(elapsed/durAppear,1),e2=easeOutCubic(p2);
+     const sc2=0.3+0.7*e2;newS.mesh.scale.set(sc2,sc2,sc2);
+     if(p2<1)requestAnimationFrame(appearAnim);
+     else{newS.mesh.scale.set(1,1,1);gameAnim=false;setTimeout(()=>checkFusions(),50);}
+    };requestAnimationFrame(appearAnim);
+   }else{gameAnim=false;setTimeout(()=>checkFusions(),50);}
+  }
+ };
+ requestAnimationFrame(moveAnim);
+}
+function doChainFusion(fi,i1,i2,i3,dir){
+ gameAnim=true;
+ const dm1=getDom(fi,i1),dm2=getDom(fi,i2),dm3=getDom(fi,i3);
+ const nf1=getRemaining(dm1,dir==='h'?'left':'top');
+ const nf2=getRemaining(dm3,dir==='h'?'right':'bottom');
+ const maxSI=Math.max(STATE_ORDER.indexOf(dm1.state),STATE_ORDER.indexOf(dm2.state),STATE_ORDER.indexOf(dm3.state));
+ const ns=STATE_ORDER[Math.min(maxSI+1,STATE_ORDER.indexOf('cosmic'))];
+ if(ns!=='white'&&fusionCounts[ns]!==undefined)fusionCounts[ns]++;
+ const pts=addSc(PTS.simple,[dm1.state,dm2.state,dm3.state]);showFP(pts);
+ const newRot=dir==='h'?90:0;
+ const s1=sats.find(s=>s.tab===fi&&s.gi===i1),s2=sats.find(s=>s.tab===fi&&s.gi===i2),s3=sats.find(s=>s.tab===fi&&s.gi===i3);
+ const applyResult=()=>{
+  setDom(fi,i2,{face1:nf1||BANK[0],face2:nf2||BANK[0],rotation:newRot,state:ns});
+  setDom(fi,i1,null);setDom(fi,i3,null);
+  rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+ };
+ if(!s1?.mesh||!s2?.mesh||!s3?.mesh){applyResult();gameAnim=false;setTimeout(()=>checkFusions(),50);return;}
+ const m1=s1.mesh,m2=s2.mesh,m3=s3.mesh;
+ const p1s=m1.position.clone(),p2s=m2.position.clone(),p3s=m3.position.clone();
+ const mid=p2s.clone();
+ let elapsed=0;const durMove=400,durFade=200,durAppear=400;
+ const moveAnim=(now)=>{
+  if(!moveAnim._last)moveAnim._last=now;
+  elapsed+=now-moveAnim._last;moveAnim._last=now;
+  const p=Math.min(elapsed/durMove,1),e=easeInOutQuad(p);
+  m1.position.lerpVectors(p1s,mid,e);m3.position.lerpVectors(p3s,mid,e);
+  const sc=1-0.4*e;m1.scale.set(sc,sc,sc);m2.scale.set(sc,sc,sc);m3.scale.set(sc,sc,sc);
+  if(p<1)requestAnimationFrame(moveAnim);
+  else{elapsed=0;moveAnim._last=null;requestAnimationFrame(fadeAnim);}
+ };
+ const fadeAnim=(now)=>{
+  if(!fadeAnim._last)fadeAnim._last=now;
+  elapsed+=now-fadeAnim._last;fadeAnim._last=now;
+  const p=Math.min(elapsed/durFade,1);
+  m1.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  m2.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  m3.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  if(p<1)requestAnimationFrame(fadeAnim);
+  else{
+   applyResult();
+   const newS=sats.find(s=>s.tab===fi&&s.gi===i2);
+   if(newS){newS.mesh.scale.set(0.3,0.3,0.3);elapsed=0;fadeAnim._last=null;
+    const appearAnim=(now2)=>{
+     if(!appearAnim._last)appearAnim._last=now2;
+     elapsed+=now2-appearAnim._last;appearAnim._last=now2;
+     const p2=Math.min(elapsed/durAppear,1),e2=easeOutCubic(p2);
+     const sc2=0.3+0.7*e2;newS.mesh.scale.set(sc2,sc2,sc2);
+     if(p2<1)requestAnimationFrame(appearAnim);
+     else{newS.mesh.scale.set(1,1,1);gameAnim=false;setTimeout(()=>checkFusions(),50);}
+    };requestAnimationFrame(appearAnim);
+   }else{gameAnim=false;setTimeout(()=>checkFusions(),50);}
+  }
+ };
+ requestAnimationFrame(moveAnim);
+}
+function doTwin(fi,i1,i2,dir){
+ gameAnim=true;
+ const dm1=getDom(fi,i1),dm2=getDom(fi,i2);
+ let ns;if(dm1.state==='cosmic'&&dm2.state==='cosmic')ns='supernovae';else ns='cosmic';
+ const pts=addSc(PTS.twin,[dm1.state,dm2.state]);showFP(pts);
+ const newRot=dir==='h'?90:0;
+ const s1=sats.find(s=>s.tab===fi&&s.gi===i1),s2=sats.find(s=>s.tab===fi&&s.gi===i2);
+ if(!s1?.mesh||!s2?.mesh){setDom(fi,i1,{...dm1,rotation:newRot,state:ns});setDom(fi,i2,null);rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();gameAnim=false;setTimeout(()=>checkFusions(),50);return;}
+ const m1=s1.mesh,m2=s2.mesh;
+ const p1s=m1.position.clone(),p2s=m2.position.clone();
+ const mid=p1s.clone().add(p2s).multiplyScalar(0.5);
+ let elapsed=0;const durMove=400,durFade=200,durAppear=500;
+ const moveAnim=(now)=>{
+  if(!moveAnim._last)moveAnim._last=now;
+  elapsed+=now-moveAnim._last;moveAnim._last=now;
+  const p=Math.min(elapsed/durMove,1),e=easeInOutQuad(p);
+  m1.position.lerpVectors(p1s,mid,e);m2.position.lerpVectors(p2s,mid,e);
+  const sc=1-0.5*e;m1.scale.set(sc,sc,sc);m2.scale.set(sc,sc,sc);
+  m1.rotation.z=e*Math.PI;m2.rotation.z=-e*Math.PI;
+  if(p<1)requestAnimationFrame(moveAnim);
+  else{elapsed=0;moveAnim._last=null;requestAnimationFrame(fadeAnim);}
+ };
+ const fadeAnim=(now)=>{
+  if(!fadeAnim._last)fadeAnim._last=now;
+  elapsed+=now-fadeAnim._last;fadeAnim._last=now;
+  const p=Math.min(elapsed/durFade,1);
+  m1.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  m2.traverse(c=>{if(c.material)c.material.opacity=1-p;});
+  if(p<1)requestAnimationFrame(fadeAnim);
+  else{
+   setDom(fi,i1,{...dm1,rotation:newRot,state:ns});setDom(fi,i2,null);
+   rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+   const newS=sats.find(s=>s.tab===fi&&s.gi===i1);
+   if(newS){newS.mesh.scale.set(0.2,0.2,0.2);elapsed=0;fadeAnim._last=null;
+    const appearAnim=(now2)=>{
+     if(!appearAnim._last)appearAnim._last=now2;
+     elapsed+=now2-appearAnim._last;appearAnim._last=now2;
+     const p2=Math.min(elapsed/durAppear,1),e2=easeOutCubic(p2);
+     const sc2=0.2+0.8*e2;newS.mesh.scale.set(sc2,sc2,sc2);
+     if(p2<1)requestAnimationFrame(appearAnim);
+     else{newS.mesh.scale.set(1,1,1);gameAnim=false;setTimeout(()=>checkFusions(),50);}
+    };requestAnimationFrame(appearAnim);
+   }else{gameAnim=false;setTimeout(()=>checkFusions(),50);}
+  }
+ };
+ requestAnimationFrame(moveAnim);
+}
+function applyGrav(){
+ const fi=mod(currentIdx);
+ const moves=[];
+ for(let y=ROWS-2;y>=0;y--)for(let x=0;x<COLS;x++){
+  const i=getIdx(x,y),iB=getIdx(x,y+1);
+  const di=getDom(fi,i),dB=getDom(fi,iB);
+  if(di&&!dB){
+   moves.push({from:i,to:iB});
+   setDom(fi,iB,di);setDom(fi,i,null);
+  }
+ }
+ if(moves.length===0)return;
+ gameAnim=true;
+ const animMoves=[];
+ moves.forEach(mv=>{
+  const sat=sats.find(s=>s.tab===fi&&s.gi===mv.from);
+  if(sat){
+   const startPos=sat.mesh.position.clone();
+   const tp=getPos(mv.to),tl=g2l(tp.x,tp.y);
+   const endPos=new THREE.Vector3(tl.x,tl.y,HALF+SAT_LIFT);
+   sat.gi=mv.to;sat.lx=tl.x;sat.ly=tl.y;
+   animMoves.push({mesh:sat.mesh,startPos,endPos});
+  }
+ });
+ if(animMoves.length===0){
+  rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
+  gameAnim=false;setTimeout(()=>applyGrav(),50);return;
+ }
+ let elapsed=0;const dur=180;
+ const gravAnim=(now)=>{
+  if(!gravAnim._last)gravAnim._last=now;
+  elapsed+=now-gravAnim._last;gravAnim._last=now;
+  const p=Math.min(elapsed/dur,1),e=easeOutCubic(p);
+  animMoves.forEach(am=>{am.mesh.position.lerpVectors(am.startPos,am.endPos,e);});
+  if(p<1)requestAnimationFrame(gravAnim);
+  else{
+   animMoves.forEach(am=>{
+    const sat=sats.find(s=>s.mesh===am.mesh);
+    if(sat)placeSat(sat,new THREE.Quaternion());
+   });
+   updCubeTexFromPorte();
+   gameAnim=false;
+   setTimeout(()=>applyGrav(),30);
+  }
+ };
+ requestAnimationFrame(gravAnim);
+}
+// ══ RAYCAST ══
+const ray=new THREE.Raycaster(),mv=new THREE.Vector2();
+function getSatAt(cx,cy){const r=canvas.getBoundingClientRect();mv.x=((cx-r.left)/r.width)*2-1;mv.y=-((cy-r.top)/r.height)*2+1;ray.setFromCamera(mv,camera);const all=[];const fi=mod(currentIdx);sats.forEach(s=>{if(s.mesh.visible&&(s.tab===fi||isPorte(s.gi)))s.mesh.traverse(c=>{if(c.isMesh)all.push(c);});});for(const h of ray.intersectObjects(all,false)){let o=h.object;while(o){if(o.userData?.isSat){const s=sats.find(x=>x.mesh===o);if(s)return s;}o=o.parent;}}return null;}
+function isCubeAt(cx,cy){const r=canvas.getBoundingClientRect();mv.x=((cx-r.left)/r.width)*2-1;mv.y=-((cy-r.top)/r.height)*2+1;ray.setFromCamera(mv,camera);return ray.intersectObject(pMesh,false).length>0;}
+// ══ POINTER ══
+let pS=null,pM=false,pSat=null,pCb=false;
+// ══ NAV SWIPE (sur canvas) ══
+let swS=null;
+canvas.addEventListener('pointerdown',e=>{
+ if(isNav||gameAnim)return;pS={x:e.clientX,y:e.clientY};pM=false;
+ pSat=getSatAt(e.clientX,e.clientY);pCb=!pSat&&isCubeAt(e.clientX,e.clientY);
+ canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove',e=>{if(pS&&Math.hypot(e.clientX-pS.x,e.clientY-pS.y)>12)pM=true;});
+canvas.addEventListener('pointerup',e=>{if(!pS)return;const dx=e.clientX-pS.x,dy=e.clientY-pS.y;
+ if(!pM){if(pCb)rotatePorte();else if(pSat)rotateDom(pSat.gi);}
+ else if(Math.hypot(dx,dy)>=15){
+  // Horizontal swipe = nav Y
+  if(Math.abs(dx)>Math.abs(dy)*1.5&&Math.abs(dx)>40){if(dx<0)navRight();else navLeft();}
+  // Vertical swipe = nav X
+  else if(Math.abs(dy)>Math.abs(dx)*1.5&&Math.abs(dy)>40){if(dy<0)navUp();else navDown();}
+  else{const dir=detectDiag(dx,dy);if(dir){let gx,gy;if(pSat){const p=getPos(pSat.gi);gx=p.x;gy=p.y;}else if(pCb){gx=1;gy=2;}if(gx!==undefined){const group=getGroup(gx,gy,dir);if(group){const fi=mod(currentIdx);if(group.some(i=>getDom(fi,i)))execGroupRot(group,isCW(dir));}}}}}
+ pS=null;pSat=null;pCb=false;});
+canvas.addEventListener('pointercancel',()=>{pS=null;pSat=null;pCb=false;});
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'){navRight();e.preventDefault();}else if(e.key==='ArrowLeft'){navLeft();e.preventDefault();}else if(e.key==='ArrowUp'){navUp();e.preventDefault();}else if(e.key==='ArrowDown'){navDown();e.preventDefault();}});
+
+// ══ UI ══
+const dotsEl=document.getElementById('navDots');
+for(let i=0;i<NUM_FACES;i++){const d=document.createElement('div');d.className='nav-dot'+(i===0?' active':'');d.addEventListener('click',()=>{if(!isNav&&!busy){if(i===1&&mod(currentIdx)===0)navRight();else if(i===0&&mod(currentIdx)===1)navLeft();}});dotsEl.appendChild(d);}
+function updateUI(){const idx=mod(currentIdx);document.getElementById('navLabel').textContent=`T${idx+1}`;dotsEl.querySelectorAll('.nav-dot').forEach((d,i)=>d.classList.toggle('active',i===idx));}
+function updateScore(){document.getElementById('scoreVal').textContent=score.toLocaleString();const ce=document.getElementById('comboVal');ce.textContent=comboCount>1?`×${(1+(comboCount-1)*0.5).toFixed(1)}`:'×1';ce.style.opacity=comboCount>1?'1':'0.5';}
+document.getElementById('btnReset').addEventListener('click',()=>{const fi=mod(currentIdx);initFace(fi);const newPorte={face1:BANK[Math.floor(srand(SEEDS[fi]+7)()*BANK.length)],face2:BANK[Math.floor(srand(SEEDS[fi]+77)()*BANK.length)],rotation:0,state:'white'};PORTE_POSITIONS.forEach(pi=>setDom(fi,pi,newPorte));score=0;comboCount=0;lastFusionTime=0;fusionCounts={silver:0,gold:0,emerald:0,cosmic:0,supernovae:0};rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();updateScore();});
+document.getElementById('btnUndo').addEventListener('click',()=>undo());
+// ══ COSMIC DRAWING ══
 function drawCosmicRing(cv,angle){
  const S=cv.width,ctx=cv.getContext('2d');
  ctx.clearRect(0,0,S,S);
@@ -334,1047 +627,73 @@ function drawSupernovaeRing(cv,angle){
  ctx.strokeStyle=grad;ctx.lineWidth=lw;
  ctx.beginPath();ctx.moveTo(m+rd,m);ctx.lineTo(S-m-rd,m);ctx.quadraticCurveTo(S-m,m,S-m,m+rd);ctx.lineTo(S-m,S-m-rd);ctx.quadraticCurveTo(S-m,S-m,S-m-rd,S-m);ctx.lineTo(m+rd,S-m);ctx.quadraticCurveTo(m,S-m,m,S-m-rd);ctx.lineTo(m,m+rd);ctx.quadraticCurveTo(m,m,m+rd,m);ctx.closePath();ctx.stroke();
 }
-function drawHalo(cv,r,g,b,phase,intensity,r2,g2,b2){
- // Halo multicouche inspiré du box-shadow empilé du proto HTML :
- // teinte CLAIRE (r,g,b) au cœur + teinte PROFONDE (r2,g2,b2) en périphérie.
- // Si la 2e teinte est absente, on réutilise la 1re (halo monochrome).
- if(r2===undefined){r2=r;g2=g;b2=b;}
+function drawHalo(cv,r,g,b,phase,intensity){
  const S=cv.width,cx=S/2,ctx=cv.getContext('2d');
  ctx.clearRect(0,0,S,S);
  const pulse=0.5+0.5*Math.sin(phase);
- const a=intensity*(0.55+pulse*0.45);                       // pulsation plus marquée
- const grd=ctx.createRadialGradient(cx,cx,S*0.04,cx,cx,cx);
- grd.addColorStop(0,   `rgba(${r},${g},${b},${(a*0.55).toFixed(2)})`);   // cœur clair
- grd.addColorStop(0.22,`rgba(${r},${g},${b},${(a*0.32).toFixed(2)})`);
- grd.addColorStop(0.45,`rgba(${r2},${g2},${b2},${(a*0.20).toFixed(2)})`);// bascule vers teinte profonde
- grd.addColorStop(0.7, `rgba(${r2},${g2},${b2},${(a*0.08).toFixed(2)})`);
- grd.addColorStop(1,   `rgba(${r2},${g2},${b2},0)`);
+ const a=intensity*(0.6+pulse*0.4);
+ const grd=ctx.createRadialGradient(cx,cx,S*0.15,cx,cx,cx);
+ grd.addColorStop(0,`rgba(${r},${g},${b},${(a*0.6).toFixed(2)})`);
+ grd.addColorStop(0.4,`rgba(${r},${g},${b},${(a*0.3).toFixed(2)})`);
+ grd.addColorStop(0.7,`rgba(${r},${g},${b},${(a*0.1).toFixed(2)})`);
+ grd.addColorStop(1,`rgba(${r},${g},${b},0)`);
  ctx.fillStyle=grd;ctx.fillRect(0,0,S,S);
 }
-
-// ─── TABLEAU-TEST DU RÉGRESSEUR (v10) — positions de la capture ───
-// Le régresseur (icônes grises épaisses) est une pièce d'AIMANT comme les autres : il est happé vers une
-// pièce d'état ≥ silver dès lors que, sur un couloir libre, les FACES EN CONTACT portent la même
-// icône. C'est le joueur qui contrôle la rencontre : il ORIENTE la bonne face (tap-rotation 90°)
-// puis ouvre le couloir (slide). Aucune fusion ne se déclenche tant que les faces ne coïncident pas.
-//   • GOLD 'circle/line' (idx4, row1 col0).
-//   • RÉGRESSEUR 'line/circle' (idx7, row1 col3) — comme la capture.
-//   • SILVER 'circle/line' (idx13, row3 col1).
-// ═══════════════════════════════════════════════════════════════════════════
-//  v20 : PLATEAU UNIQUE + AIMANT-CHAÎNE BILATÉRAL
-//  Les anciens niveaux (chaîne entre plans, migration, demote) sont retirés :
-//  on ne grade plus les plateaux. Un seul plan jouable, conçu pour exposer les
-//  possibilités de fusion. La richesse reviendra par de nouveaux DEMO_LEVEL.
-//
-//  NOUVELLE MÉCANIQUE — L'AIMANT-CHAÎNE (extension de tryMagnet) :
-//  Une pièce CENTRALE qui, après un pivot, expose une face qui matche une pièce
-//  À DISTANCE d'un côté ET une autre face qui matche une pièce à distance du côté
-//  OPPOSÉ (couloirs vides des deux côtés) → les DEUX extrémités sont happées vers
-//  le centre et fusionnent en CHAÎNE À 3 (faces de contact annulées, faces des
-//  extrémités → résultat, état +1). Si un seul côté matche → aimant simple (comme
-//  avant). Vertical (haut+bas) ET horizontal (gauche+droite).
-// ═══════════════════════════════════════════════════════════════════════════
-//  Grille 4×6, idx = row*4 + col.  col 0..3, row 0..5.
-//
-//  TROIS DÉMONSTRATIONS sur le même plateau :
-//
-//  ① FUSION SIMPLE (en haut, ligne 0) : deux blancs adjacents partageant 'circle'
-//    au contact → fusion immédiate dès qu'ils se touchent (ils le sont déjà :
-//    glisse-les ou observe, idx0 expose 'circle' à droite, idx1 'circle' à gauche).
-//
-//  ② AIMANT SIMPLE (ligne 2) : deux blancs 'wave' séparés par un couloir vide sur
-//    la même ligne → s'attirent seuls (mécanique signature conservée).
-//
-//  ③ AIMANT-CHAÎNE BILATÉRAL (colonne 1, le cœur de v20) : une pièce CENTRALE
-//    (idx 13, 'chevron/chevron') au milieu de la colonne 1. En haut de la colonne
-//    (idx 1… non : col1 = idx 1,5,9,13,17,21) on place une proie 'chevron' en haut
-//    (idx 5) et une en bas (idx 21), couloirs vides. La pièce centrale 'chevron'
-//    des deux faces → expose 'chevron' en haut ET en bas : les deux extrémités
-//    sont aspirées et chaînent à 3 en une fusion (résultat silver au centre).
-//    → Démonstration directe de la chaîne bilatérale, sans même tap requis.
-const DEMO_LEVEL=[
-  // Grille 5×9 (col=idx%5, row=floor(idx/5)). LANDING_IDX=10 (col0,row2) laissé libre.
-  // ① ligne 0 (idx0,idx1) — orientés pour NE PAS matcher au contact
-  [0, 'white','circle','line',0],
-  [1, 'white','line','circle',0],
-  // ② ligne 1 (idx6,idx9) — couloir libre mais faces non alignées
-  [6, 'white','wave','line',0],
-  [9, 'white','line','wave',180],
-  // ③ colonne 1 (idx11,16,21) — pièces présentes, aucune orientée pour matcher
-  [11,'white','line','chevron',90],
-  [16,'white','chevron','wave',90],
-  [21,'white','chevron','line',180],
-];
-
-// ─── Plateau unique : plus de gradation entre plans ───
-const TARGET_BY_BOARD=[0];           // 0 = pas d'objectif (bac à sable de démonstration)
-const GOAL_BY_BOARD=[null];
-function goalFor(boardIdx){ return GOAL_BY_BOARD[boardIdx]||null; }
-function targetFor(boardIdx){ return TARGET_BY_BOARD[boardIdx] != null ? TARGET_BY_BOARD[boardIdx] : 1; }
-const LANDING_IDX=10;
-const DEMOTE_BY_BOARD=[0];
-function demoteFor(boardIdx){ return DEMOTE_BY_BOARD[boardIdx] != null ? DEMOTE_BY_BOARD[boardIdx] : 0; }
-function demoteState(st,n){ let i=STATE_ORDER.indexOf(st||'white'); i=Math.max(0,i-n); return STATE_ORDER[i]; }
-
-const DEMOS=[ DEMO_LEVEL ];
-
-const canvas=document.getElementById('c');
-const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
-renderer.setSize(window.innerWidth,window.innerHeight); renderer.setPixelRatio(Math.min(window.devicePixelRatio,2)); renderer.setClearColor(0x000000);
-const scene=new THREE.Scene();
-const camera=new THREE.PerspectiveCamera(42,window.innerWidth/window.innerHeight,0.1,200); scene.add(new THREE.AmbientLight(0xffffff,0.95));
-
-const FACE_W=COLS*CELL_W, FACE_H=ROWS*CELL_W, HALF=FACE_W/2, CAM_Z=11;
-const stackGroup=new THREE.Group(); scene.add(stackGroup);
-const cubeGroup=stackGroup;    // alias : la logique de jeu continue d'ajouter ses meshes ici
-const FACE_ROT=[0,Math.PI/2,Math.PI,-Math.PI/2]; // conservé pour compat
-
-// ─── v8 : CUBE TOURNANT (façon mada, sans porte) ───
-//  Les NBOARDS tableaux sont disposés sur les faces latérales d'un cube. La face courante
-//  regarde la caméra ; les voisines sont à ±90° sur Y. Pour changer de tableau, on tourne
-//  cubeGroup de 90° sur Y (slerp). Chaque face a son propre groupe (faceGroups[f]) dont la
-//  transform fixe la pose sur le cube ; dominos et grille vivent dans le repère local plat
-//  de ce groupe (comme en v6 : x/y dans le plan, z vers l'extérieur).
-//  RADIUS choisi pour que la face courante retombe exactement à Z=0 (cadrage identique v6) :
-//  cubeGroup reculé de RADIUS, chaque face translatée de +RADIUS vers son extérieur.
-const RADIUS = NBOARDS<=1 ? 0 : HALF / Math.tan((NBOARDS===4?Math.PI/4:Math.PI/NBOARDS)); // 1 plan : plat, pas de cube
-cubeGroup.position.set(0,0,-RADIUS);
-const faceGroups=[];
-for(let f=0;f<NBOARDS;f++){
-  const fg=new THREE.Group();
-  const ang=f*(2*Math.PI/NBOARDS);                 // azimut de la face autour de Y
-  fg.position.set(Math.sin(ang)*RADIUS, 0, Math.cos(ang)*RADIUS);
-  fg.rotation.y=ang;                               // la face regarde vers l'extérieur
-  fg.userData.face=f;
-  cubeGroup.add(fg);
-  faceGroups.push(fg);
-}
-// Attache/détache un mesh de domino sur le groupe de SA face (repère local plat).
-function addDomino(mesh,f){ faceGroups[f].add(mesh); }
-function removeDomino(mesh){ if(mesh&&mesh.parent) mesh.parent.remove(mesh); }
-
-function makeGridTex(){ const S=512, cv=document.createElement('canvas'); cv.width=Math.round(S*COLS/ROWS); cv.height=S;
-  // Quadrillage supprimé : plan de jeu en noir profond, sans lignes ni damier.
-  return new THREE.CanvasTexture(cv);
-}
-const gridTex=makeGridTex(); const gridMeshes=[];
-for(let f=0;f<NBOARDS;f++){ const plane=new THREE.Mesh(new THREE.PlaneGeometry(FACE_W,FACE_H),
-  new THREE.MeshBasicMaterial({map:gridTex,transparent:true,side:THREE.FrontSide,depthWrite:false}));
-  plane.renderOrder=-2; plane.userData.face=f; faceGroups[f].add(plane); gridMeshes.push(plane); }
-
-function cellToLocal(col,row){ return { x:(col-(COLS-1)/2)*CELL_W, y:((ROWS-1)/2-row)*CELL_W }; }
-function getPos(i){ return {col:i%COLS,row:Math.floor(i/COLS)}; }
-function getIdx(col,row){ return (col<0||col>=COLS||row<0||row>=ROWS)?-1:row*COLS+col; }
-
-const SAT_DEPTH=0.02, SAT_LIFT=0.012, SZ=CELL_W*0.92, RR=0.1;
-function rrShape(w,h,r){ const s=new THREE.Shape(),hw=w/2,hh=h/2;
-  s.moveTo(-hw+r,-hh);s.lineTo(hw-r,-hh);s.quadraticCurveTo(hw,-hh,hw,-hh+r);s.lineTo(hw,hh-r);
-  s.quadraticCurveTo(hw,hh,hw-r,hh);s.lineTo(-hw+r,hh);s.quadraticCurveTo(-hw,hh,-hw,hh-r);
-  s.lineTo(-hw,-hh+r);s.quadraticCurveTo(-hw,-hh,-hw+r,-hh);return s; }
-function createDominoMesh(face1,face2,state,regress,rotation){ const grp=new THREE.Group();
-  const faceMesh=new THREE.Mesh(new THREE.PlaneGeometry(SZ,SZ),new THREE.MeshBasicMaterial({map:getDominoTex(face1,face2,rotation||0,state,regress),transparent:true,side:THREE.DoubleSide}));
-  faceMesh.position.z=SAT_DEPTH/2+0.001; grp.add(faceMesh);
-  const bodyGeo=new THREE.ExtrudeGeometry(rrShape(SZ,SZ,RR),{depth:SAT_DEPTH,bevelEnabled:false}); bodyGeo.translate(0,0,-SAT_DEPTH/2);
-  grp.add(new THREE.Mesh(bodyGeo,[new THREE.MeshBasicMaterial({color:0x0a0e14,transparent:true,opacity:0.35}),new THREE.MeshBasicMaterial({color:0x10141a,transparent:true,opacity:0.5})]));
-  // régresseur = icônes grises épaisses (cf getDominoTex) ; contour/glow identiques aux autres
-  const edgeCol = 0x22d3ee;
-  // ── LISERÉ PLEIN (vraie épaisseur, indépendant du lineWidth WebGL) ──
-  // Cadre arrondi = forme extérieure SZ avec un trou intérieur (SZ - 2*EDGE_W).
-  // L'écart EDGE_W est l'épaisseur réelle du liseré, réglable au pixel près.
-  const EDGE_W = 0.055;                                    // épaisseur du liseré (unités monde)
-  const frameShape = rrShape(SZ, SZ, RR);
-  frameShape.holes.push(rrShape(SZ-2*EDGE_W, SZ-2*EDGE_W, Math.max(0.01,RR-EDGE_W)));
-  const edge=new THREE.Mesh(new THREE.ShapeGeometry(frameShape),new THREE.MeshBasicMaterial({color:edgeCol,transparent:true,opacity:0.18,side:THREE.DoubleSide,depthWrite:false}));
-  edge.position.z=SAT_DEPTH/2+0.002; grp.add(edge);
-  const glow=new THREE.Mesh(new THREE.ShapeGeometry(rrShape(SZ+0.12,SZ+0.12,RR+0.04)),new THREE.MeshBasicMaterial({color:edgeCol,transparent:true,opacity:0})); glow.position.z=-SAT_DEPTH/2-0.01; grp.add(glow);
-  // ── ÉTATS RICHES (structure portée de mkSat / prisme) ──
-  // ombre portée douce (radiale) derrière la pièce
-  const sc=document.createElement('canvas'); sc.width=128; sc.height=128; const sx=sc.getContext('2d');
-  const sg=sx.createRadialGradient(64,64,10,64,64,60); sg.addColorStop(0,'rgba(0,0,0,0.3)'); sg.addColorStop(0.5,'rgba(0,0,0,0.1)'); sg.addColorStop(1,'rgba(0,0,0,0)');
-  sx.fillStyle=sg; sx.fillRect(0,0,128,128);
-  const shadow=new THREE.Mesh(new THREE.PlaneGeometry(SZ*1.2,SZ*1.2),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(sc),transparent:true,opacity:0.45,depthWrite:false})); shadow.position.z=-SAT_DEPTH/2-SAT_LIFT+0.005; grp.add(shadow);
-  // ring arc-en-ciel (cosmic / supernovae / plasma) dessiné sur canvas
-  const ringCv=document.createElement('canvas'); ringCv.width=256; ringCv.height=256;
-  const ringTex=new THREE.CanvasTexture(ringCv);
-  const ringMesh=new THREE.Mesh(new THREE.PlaneGeometry(SZ,SZ),new THREE.MeshBasicMaterial({map:ringTex,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide})); ringMesh.position.z=SAT_DEPTH/2+0.003; grp.add(ringMesh);
-  // halo large pulsant (sprite)
-  const haloCv=document.createElement('canvas'); haloCv.width=256; haloCv.height=256;
-  const haloTex=new THREE.CanvasTexture(haloCv);
-  const haloSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:haloTex,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending})); haloSprite.scale.set(SZ*2.8,SZ*2.8,1); grp.add(haloSprite);
-  // userData mappé aux noms du prisme (edgeLines/glowMesh) pour une boucle animate identique.
-  grp.userData={faceMesh,edge,glow,edgeLines:edge,glowMesh:glow,shadow,ringCanvas:ringCv,ringTex,ringMesh,haloCanvas:haloCv,haloTex,haloSprite,isDomino:true,regress:!!regress}; return grp;
-}
-
-let boards=[], currentBoard=0, moves=0;
-function buildBoards(){
-  boards.forEach(b=>b.forEach(p=>{ if(p&&p.mesh)removeDomino(p.mesh); }));
-  boards=DEMOS.map(()=>new Array(TOTAL).fill(null));
-  DEMOS.forEach((demo,f)=>{ demo.forEach(([idx,state,face1,face2,rotation,regress])=>{
-    const mesh=createDominoMesh(face1,face2,state,regress,rotation||0); mesh.visible=false; addDomino(mesh,f);
-    boards[f][idx]={state,state1:state,state2:state,face1,face2,rotation:rotation||0,regress:!!regress,mesh,face:f}; }); });
-}
-
-// ════════════════════════════════════════════
-//  HISTORIQUE / UNDO ILLIMITÉ
-//  On snapshote l'ÉTAT LOGIQUE complet (tous les plans + plan courant) AVANT
-//  chaque action du joueur (slide, rotation). Les fusions/aimants/migrations
-//  qui en découlent sont donc capturés par le même snapshot : un undo restaure
-//  l'état exact d'avant le coup, plan courant inclus (donc remonte aussi les
-//  migrations). On ne stocke pas les meshes (recréés à la restauration).
-let history=[];
-function snapshotState(){
-  return {
-    currentBoard,
-    boards: boards.map(arr=>arr.map(p=>p? {
-      state:p.state, state1:p.state1, state2:p.state2,
-      face1:p.face1, face2:p.face2, rotation:p.rotation||0, regress:!!p.regress, face:p.face
-    } : null))
-  };
-}
-// Empile l'état AVANT un coup. Appelé une seule fois par geste joueur.
-function pushHistory(){ history.push(snapshotState()); updateUndoBtn(); }
-function restoreState(snap){
-  // purge tous les meshes existants
-  boards.forEach(arr=>arr.forEach(p=>{ if(p&&p.mesh)removeDomino(p.mesh); }));
-  currentBoard=snap.currentBoard;
-  boards=snap.boards.map((arr,f)=>arr.map(d=>{
-    if(!d)return null;
-    const mesh=createDominoMesh(d.face1,d.face2,d.state,d.regress,d.rotation||0); mesh.visible=false; addDomino(mesh,f);
-    return {state:d.state,state1:d.state1,state2:d.state2,face1:d.face1,face2:d.face2,rotation:d.rotation||0,regress:!!d.regress,mesh,face:f};
-  }));
-  assignFaces(); updateUI(); updateUndoBtn();
-}
-function doUndo(){
-  if(busy||isAnimating||swapAnim||rotAnim||migrating)return;
-  if(!history.length)return;
-  const snap=history.pop();
-  restoreState(snap);
-  showToast('Annulé');
-}
-function updateUndoBtn(){ const b=document.getElementById('undoBtn'); if(b)b.disabled=history.length===0; }
-
-function getTipDir(p){ const rot=(((p.rotation||0)%360)+360)%360;
-  if(rot===0)return{dc:0,dr:-1}; if(rot===90)return{dc:1,dr:0}; if(rot===180)return{dc:0,dr:1}; if(rot===270)return{dc:-1,dr:0}; return{dc:0,dr:-1}; }
-
-function placePiece(p){ if(!p||!p.mesh)return;
-  const i=boards[p.face].indexOf(p); const {col,row}=getPos(i); const {x,y}=cellToLocal(col,row);
-  // La ROTATION vit dans la TEXTURE (façon prisme) : le mesh garde une orientation neutre.
-  // baseQuat = identité (le balancement décoratif s'appuie dessus). On régénère la texture
-  // pour que l'icône reflète p.rotation.
-  p.mesh.position.set(x,y,SAT_LIFT); p.mesh.quaternion.identity(); p.baseQuat=new THREE.Quaternion(); p._settle=clock.getElapsedTime();
-  refreshTex(p);
-}
-function mod(n){ return ((n%NBOARDS)+NBOARDS)%NBOARDS; }
-
-// v8 : CUBE. Toutes les faces existent en permanence dans l'espace ; orienter cubeGroup pour
-// que la face courante regarde la caméra. Angle cible = -currentBoard*(2π/n) (on tourne le cube
-// pour ramener la face f devant). Les dominos sont posés dans le repère local de leur face.
-function cubeAngleFor(boardIdx){ return -boardIdx*(2*Math.PI/NBOARDS); }
-function assignFaces(){
-  gridMeshes.forEach(g=>{ g.position.set(0,0,0); g.quaternion.identity(); g.visible=true; });
-  boards.forEach((arr)=>{ arr.forEach(p=>{ if(!p)return; placePiece(p); p.mesh.visible=true; }); });
-  // oriente le cube sur la face courante (sans animation : pose directe)
-  cubeGroup.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0), cubeAngleFor(currentBoard));
-}
-// ════════════════════════════════════════════════════════════
-//  MOTEUR DE JEU — portage fidèle de la mécanique ADAM V4 :
-//  glissement tapis-roulant (ligne/colonne, wrap-around), tap-rotation,
-//  fusion par faces exposées identiques (icône + état).
-//  L'enveloppe "stack" (profondeur, nav, zoom-traversant) est conservée.
-// ════════════════════════════════════════════════════════════
-
-let busy=false, isAnimating=false, navDir=0;
-const ROT_DUR=0.55;
-let swapAnim=null;            // réutilisé pour animer le snap du glissement
-let rotAnim=null;             // animation de pivot du domino au tap (slerp doux, feel du layer)
-
-function curBoard(){ return boards[currentBoard]; }
-
-// ─── Navigation entre tableaux (v8 : ROTATION 90° DU CUBE sur Y, façon mada) ───
-//  Toutes les faces sont déjà dans l'espace. On tourne cubeGroup pour ramener la face
-//  voisine devant la caméra. targetQuat = orientation cible ; le slerp est joué dans animate.
-const targetQuat=new THREE.Quaternion();
-function navRight(){ if(busy||isAnimating||swapAnim||rotAnim)return; busy=true;isAnimating=true;navDir=1;
-  targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0), cubeAngleFor(mod(currentBoard+1))); }
-function navLeft(){ if(busy||isAnimating||swapAnim||rotAnim)return; busy=true;isAnimating=true;navDir=-1;
-  targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0), cubeAngleFor(mod(currentBoard-1))); }
-function onRotationComplete(){ currentBoard=mod(currentBoard+navDir); navDir=0;
-  cubeGroup.quaternion.copy(targetQuat); assignFaces(); isAnimating=false; busy=false; updateUI();
-  setTimeout(checkFusions,100); }
-
-function updateUI(){ dotsEl.querySelectorAll('.nav-dot').forEach((d,i)=>d.classList.toggle('active',i===mod(currentBoard))); updateGoalTag(); }
-// Pastille "COMMANDE" : visible uniquement sur un plan à objectif-pièce.
-function updateGoalTag(){
-  const el=document.getElementById('goalTag'); const g=goalFor(mod(currentBoard));
-  if(!g){ el.style.display='none'; return; }
-  const c=STC[g.state]||STC.white;
-  el.style.display='flex'; el.style.borderColor=c.border;
-  el.innerHTML='COMMANDE&nbsp;·&nbsp;<b style="color:'+c.icon+'">'+g.state.toUpperCase()+'</b>'+
-    '<svg viewBox="10 4 70 34" width="30" height="15" style="margin-left:5px"><style>.gi{stroke:'+c.icon+
-    ';stroke-width:4;stroke-linecap:round;stroke-linejoin:round;fill:none}</style>'+
-    renderIcoSVG(g.icon,false).replace('class="i"','class="gi"')+'</svg>';
-}
-function showToast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1200); }
-
-// ─── FACES EXPOSÉES (porté du V4) ───
-// Selon la rotation, chaque domino expose face1/face2 sur top/bottom/left/right.
-function getExposedFace(p,dir){ const r=(((p.rotation||0)%360)+360)%360;
-  const map={0:{top:'face1',bottom:'face2'},90:{left:'face2',right:'face1'},180:{top:'face2',bottom:'face1'},270:{left:'face1',right:'face2'}};
-  const f=map[r]&&map[r][dir]; return f?p[f]:null; }
-function getRemainingFace(p,excDir){ const r=(((p.rotation||0)%360)+360)%360;
-  const map={0:{top:'face2',bottom:'face1'},90:{right:'face2',left:'face1'},180:{top:'face1',bottom:'face2'},270:{right:'face1',left:'face2'}};
-  const f=map[r]&&map[r][excDir]; return f?p[f]:null; }
-
-// ─── Helpers grille ───
-function rowOf(i){ return Math.floor(i/COLS); }
-function colOf(i){ return i%COLS; }
-
-// Met à jour la texture d'un mesh selon ses deux faces + rotation + état courant.
-// (La ROTATION est rendue DANS la texture, façon prisme : le mesh ne pivote plus physiquement.)
-function refreshTex(p){ if(!p||!p.mesh)return; const st=p.state1||p.state||'white';
-  p.mesh.userData.faceMesh.material.map=getDominoTex(p.face1,p.face2,p.rotation||0,st,p.regress);
-  p.mesh.userData.faceMesh.material.needsUpdate=true; }
-
-// ─── TAP = ROTATION (porté À L'IDENTIQUE de prisme) ───
-// Le mesh tourne PHYSIQUEMENT par slerp de quaternion (logo fluide), 250ms easeOutCubic.
-// À la fin : on remet le mesh à son orientation neutre ET on régénère la texture à la nouvelle
-// rotation — la texture rendue correspond exactement à l'angle physique atteint, bascule invisible.
-// Clics consécutifs : si une rotation tourne déjà sur CETTE pièce, on EMPILE (file) au lieu d'ignorer.
-function rotatePiece(i,clockwise){ const p=curBoard()[i]; if(!p||!p.mesh)return;
-  const delta=clockwise?90:-90;
-  // déjà en rotation sur la même pièce → on met en file (enchaîne un 2e/3e 90°)
-  if(rotAnim && rotAnim.piece===p){ pushHistory(); rotAnim.queue.push(delta); return; }
-  if(busy||isAnimating||swapAnim||rotAnim)return;
-  pushHistory();
-  startRotAnim(p,delta);
-}
-function startRotAnim(p,delta){
-  busy=true;
-  const base=p.baseQuat?p.baseQuat.clone():new THREE.Quaternion();
-  // signe inversé vs CSS (façon prisme : -90° sur Z pour un +90° logique horaire)
-  const localRot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-delta*Math.PI/180);
-  const startQ=base.clone();
-  const endQ=base.clone().multiply(localRot);
-  rotAnim={mesh:p.mesh,piece:p,delta,startQ,endQ,t:0,queue:[],after:()=>{ p._settle=clock.getElapsedTime(); busy=false; setTimeout(()=>checkFusions(),60); }};
-}
-
-// ════════════════════════════════════════════
-//  GLISSEMENT TAPIS-ROULANT (porté du V4)
-//  - drag horizontal => toute la ligne glisse, wrap-around
-//  - drag vertical   => toute la colonne glisse, wrap-around
-//  - snap au cran le plus proche en fin de drag
-// ════════════════════════════════════════════
-let dragging=false, dragAxis=null, dragRow=-1, dragCol=-1;
-let dragStartX=0, dragStartY=0, dragStartT=0, dragOff=0;
-let dragPiece=null;           // pièce sous le doigt (pour tap)
-let dragMembers=[];           // {p, base} pièces de la ligne/colonne en cours de glissement
-let dragGhostShift=0;
-
-const CELL=CELL_W;            // pas d'une case en unités monde
-function lineSpan(){ return COLS*CELL; }
-function colSpan(){ return ROWS*CELL; }
-
-// position locale x/y d'une case (réutilise cellToLocal du stack)
-function startSlide(axis,row,col){
-  dragAxis=axis; dragMembers=[]; dragOff=0;
-  const head=curBoard();
-  if(axis==='horizontal'){
-    for(let c=0;c<COLS;c++){ const idx=row*COLS+c; const p=head[idx]; if(p) dragMembers.push({p,baseCol:c,baseRow:row}); }
-  } else {
-    for(let r=0;r<ROWS;r++){ const idx=r*COLS+col; const p=head[idx]; if(p) dragMembers.push({p,baseCol:col,baseRow:r}); }
+// ══ RENDER ══
+const clock=new THREE.Clock();let lt=0;
+function animate(){
+ requestAnimationFrame(animate);const t=clock.getElapsedTime(),dt=t-lt;lt=t;
+ updateRotAnim(dt);
+ if(isNav&&navDir!==0){cubeGroup.quaternion.slerp(targetQuat,0.12);if(1-Math.abs(cubeGroup.quaternion.dot(targetQuat))<0.0001){cubeGroup.quaternion.copy(targetQuat);onNavDone();}}
+ haloMat.opacity=0.4+0.35*(0.5+0.5*Math.sin(t*1.8));
+ camera.position.x+=(targetCamX-camera.position.x)*0.08;camera.position.z+=(targetCamZ-camera.position.z)*0.08;camera.lookAt(camera.position.x,0,0);
+ const fi=mod(currentIdx);
+ sats.forEach((s,si)=>{if(!isNav){if(isPorte(s.gi))s.mesh.visible=!!getDom(0,s.gi);else s.mesh.visible=(s.tab===fi);}if(s.mesh.visible){updSatTex(s);const isRotating=rotAnimActive&&rotAnimActive.sat===s;if(s.baseQuat&&!isNav&&!isRotating){const ph=t*1.2+si*1.7;const bq=new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.sin(ph)*0.012,0,Math.cos(ph*0.7)*0.008));s.mesh.quaternion.copy(s.baseQuat).multiply(bq);}
+  const d=getDom(s.tab,s.gi);if(!d)return;const st=d.state||'white',ud=s.mesh.userData;
+  if(st==='cosmic'){
+   drawCosmicRing(ud.ringCanvas,t*Math.PI/2);ud.ringTex.needsUpdate=true;ud.ringMesh.material.opacity=1;
+   drawHalo(ud.haloCanvas,131,56,236,t*Math.PI,0.5);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.8;
+   const cp=t*1.5+si;ud.edgeLines.material.color.setRGB(0.5+Math.sin(cp)*0.3,Math.sin(cp+2.1)*0.3+0.2,0.5+Math.sin(cp+4.2)*0.3);ud.edgeLines.material.opacity=0.5+Math.sin(t*2)*0.15;
+   ud.glowMesh.material.color.set(0x8338ec);ud.glowMesh.material.opacity=0.2+0.12*Math.sin(t*2+si);
   }
-}
-
-// applique un offset continu (en unités monde) au glissement courant, avec wrap visuel
-function applySlide(off){
-  dragOff=off;
-  if(dragAxis==='horizontal'){
-    const span=lineSpan();
-    dragMembers.forEach(m=>{ const base=cellToLocal(m.baseCol,m.baseRow);
-      let x=base.x+off;
-      // wrap visuel dans [-span/2, span/2] autour de la grille
-      const minX=cellToLocal(0,m.baseRow).x, maxX=cellToLocal(COLS-1,m.baseRow).x;
-      while(x>maxX+CELL/2) x-=span;
-      while(x<minX-CELL/2) x+=span;
-      m.p.mesh.position.x=x;
-    });
-  } else {
-    const span=colSpan();
-    dragMembers.forEach(m=>{ const base=cellToLocal(m.baseCol,m.baseRow);
-      let y=base.y-off;   // glisser vers le bas = y diminue
-      const maxY=cellToLocal(m.baseCol,0).y, minY=cellToLocal(m.baseCol,ROWS-1).y;
-      while(y>maxY+CELL/2) y-=span;
-      while(y<minY-CELL/2) y+=span;
-      m.p.mesh.position.y=y;
-    });
+  else if(st==='supernovae'){
+   drawSupernovaeRing(ud.ringCanvas,t*Math.PI*2/3);ud.ringTex.needsUpdate=true;ud.ringMesh.material.opacity=1;
+   drawHalo(ud.haloCanvas,255,140,0,t*Math.PI*1.25,0.6);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.9;
+   ud.edgeLines.material.color.setRGB(1,0.4+Math.sin(t*2+si)*0.3,Math.sin(t*1.5)*0.15);ud.edgeLines.material.opacity=0.5+Math.sin(t*2.5)*0.12;
+   ud.glowMesh.material.color.set(0xff8c00);ud.glowMesh.material.opacity=0.3+0.2*Math.sin(t*2.5+si);
   }
-}
-
-// fin de glissement : calcule le nombre de crans et réécrit la grille logique (wrap-around)
-function commitSlide(){
-  const head=curBoard();
-  let steps;
-  // un slide qui ne décale rien (multiple du tour complet) ne crée pas d'entrée d'historique
-  const rawSteps=Math.round(dragOff/CELL);
-  const span=(dragAxis==='horizontal')?COLS:ROWS;
-  if(((rawSteps%span)+span)%span!==0){ pushHistory(); }
-  if(dragAxis==='horizontal'){
-    steps=rawSteps;
-    const row=dragRow;
-    const newRow=[];
-    for(let c=0;c<COLS;c++){ const src=((c-steps)%COLS+COLS)%COLS; newRow[c]=head[row*COLS+src]; }
-    for(let c=0;c<COLS;c++){ head[row*COLS+c]=newRow[c]; }
-  } else {
-    steps=rawSteps;  // off>0 (glissé bas) => descend d'une ligne (row+1)
-    const col=dragCol;
-    const newCol=[];
-    for(let r=0;r<ROWS;r++){ const src=((r-steps)%ROWS+ROWS)%ROWS; newCol[r]=head[src*COLS+col]; }
-    for(let r=0;r<ROWS;r++){ head[r*COLS+col]=newCol[r]; }
+  else if(st==='emerald'){
+   ud.ringMesh.material.opacity=0;
+   drawHalo(ud.haloCanvas,52,211,153,t*Math.PI*0.8,0.35);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.7;
+   ud.edgeLines.material.color.set(0x34d399);ud.edgeLines.material.opacity=0.3+0.1*Math.sin(t*1.5+si);
+   ud.glowMesh.material.color.set(0x34d399);ud.glowMesh.material.opacity=0.15+0.1*Math.sin(t*1.5+si);
   }
-  // animer chaque pièce vers sa case logique finale (snap doux via swapAnim)
-  const pairs=[];
-  head.forEach((p,idx)=>{ if(!p||!p.mesh)return;
-    const from=p.mesh.position.clone();
-    placePiece(p,0); const to=p.mesh.position.clone();
-    if(!from.equals(to)){ pairs.push({mesh:p.mesh,from,to}); p.mesh.position.copy(from); }
-  });
-  dragMembers=[]; dragAxis=null;
-  if(!pairs.length){ busy=false; setTimeout(checkFusions,60); return; }
-  busy=true;
-  swapAnim={pairs,t:0,after:()=>{ busy=false; setTimeout(checkFusions,80); }};
-}
-
-function tickSwap(dt){ if(!swapAnim)return; swapAnim.t+=dt*5.0;
-  const pr=Math.min(1,swapAnim.t); const e=pr<0.5?2*pr*pr:(1-Math.pow(-2*pr+2,2)/2);
-  swapAnim.pairs.forEach(pp=>pp.mesh.position.lerpVectors(pp.from,pp.to,e));
-  if(pr>=1){ const cb=swapAnim.after; swapAnim=null; assignFaces(); if(cb)cb(); } }
-
-// rotation au tap façon prisme : le mesh PIVOTE physiquement (slerp 250ms easeOutCubic),
-// le logo tourne en continu. À la fin : rotation logique +delta, reset mesh à baseQuat, texture.
-// Si des clics ont été empilés (queue), on enchaîne directement la rotation suivante.
-function tickRot(dt){ if(!rotAnim)return; rotAnim.t+=dt*6.0;   // ~0.167s (plus vif)
-  const pr=Math.min(1,rotAnim.t); const e=1-Math.pow(1-pr,3);
-  rotAnim.mesh.quaternion.copy(rotAnim.startQ).slerp(rotAnim.endQ,e);
-  // enchaînement anticipé : si des clics sont empilés, on bascule sur le suivant
-  // dès que le pivot courant est quasi fini (pr≥0.7) → plus aucune micro-pause.
-  if(pr>=0.7 && rotAnim.queue.length){
-    const p=rotAnim.piece;
-    p.rotation=(((p.rotation||0)+rotAnim.delta)%360+360)%360;
-    refreshTex(p);
-    const queue=rotAnim.queue, after=rotAnim.after, next=queue.shift();
-    const base=p.baseQuat?p.baseQuat.clone():new THREE.Quaternion();
-    const localRot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-next*Math.PI/180);
-    rotAnim={mesh:p.mesh,piece:p,delta:next,startQ:base.clone(),endQ:base.clone().multiply(localRot),t:0,queue,after};
-    return;
+  else if(st==='gold'){
+   ud.ringMesh.material.opacity=0;
+   drawHalo(ud.haloCanvas,255,215,0,t*Math.PI*0.6,0.25);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.5;
+   ud.edgeLines.material.color.set(0xffd700);ud.edgeLines.material.opacity=0.25+0.08*Math.sin(t*1.2+si);
+   ud.glowMesh.material.color.set(0xffd700);ud.glowMesh.material.opacity=0.08+0.05*Math.sin(t*1.2+si);
   }
-  if(pr>=1){
-    const p=rotAnim.piece;
-    p.rotation=(((p.rotation||0)+rotAnim.delta)%360+360)%360;
-    rotAnim.mesh.quaternion.copy(p.baseQuat||new THREE.Quaternion());  // retour orientation neutre
-    refreshTex(p);                                                     // texture à la nouvelle rotation
-    if(rotAnim.queue.length){
-      // enchaîner le clic suivant : nouvelle anim depuis l'orientation neutre, file conservée
-      const queue=rotAnim.queue, after=rotAnim.after, next=queue.shift();
-      const base=p.baseQuat?p.baseQuat.clone():new THREE.Quaternion();
-      const localRot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-next*Math.PI/180);
-      rotAnim={mesh:p.mesh,piece:p,delta:next,startQ:base.clone(),endQ:base.clone().multiply(localRot),t:0,queue,after};
-    } else {
-      const cb=rotAnim.after; rotAnim=null; if(cb)cb();
-    }
-  } }
-
-// ─── ENTRÉE POINTEUR : tap (rotation) ou glissement (ligne/colonne) ───
-const raycaster=new THREE.Raycaster(), mouseV=new THREE.Vector2();
-function pieceAt(cx,cy){ const r=canvas.getBoundingClientRect();
-  mouseV.x=((cx-r.left)/r.width)*2-1; mouseV.y=-((cy-r.top)/r.height)*2+1; raycaster.setFromCamera(mouseV,camera);
-  const meshes=[]; curBoard().forEach(p=>{ if(p&&p.mesh&&p.mesh.visible)p.mesh.traverse(c=>{if(c.isMesh)meshes.push(c);}); });
-  for(const h of raycaster.intersectObjects(meshes,false)){ let o=h.object;
-    while(o){ if(o.userData&&o.userData.isDomino){ const found=curBoard().find(p=>p&&p.mesh===o); if(found)return found; } o=o.parent; } }
-  return null;
-}
-// convertit un déplacement pixel en déplacement monde approx (échelle plan de tête)
-function pxToWorld(px){ const r=canvas.getBoundingClientRect(); return (px/r.width)*FACE_W; }
-
-let downX=0,downY=0,downT=0,moved=false;
-canvas.addEventListener('pointerdown',e=>{
-  // une rotation en cours ne bloque PAS la capture : on veut pouvoir empiler un clic.
-  if(isAnimating||swapAnim||migrating)return;
-  if(busy && !rotAnim)return;
-  dragPiece=pieceAt(e.clientX,e.clientY);
-  if(!dragPiece)return;
-  downX=e.clientX; downY=e.clientY; downT=Date.now(); moved=false;
-  dragging=true; dragAxis=null;
-  const i=curBoard().indexOf(dragPiece); dragRow=rowOf(i); dragCol=colOf(i);
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener('pointermove',e=>{
-  if(!dragging)return;
-  const dx=e.clientX-downX, dy=e.clientY-downY;
-  if(dragAxis===null){
-    if(rotAnim) return;   // rotation en cours : on n'initie pas de glissement (seul le tap empile)
-    if(Math.abs(dx)>8||Math.abs(dy)>8){ moved=true;
-      dragAxis=Math.abs(dx)>Math.abs(dy)?'horizontal':'vertical';
-      startSlide(dragAxis,dragRow,dragCol);
-    } else return;
+  else if(st==='silver'){
+   ud.ringMesh.material.opacity=0;
+   drawHalo(ud.haloCanvas,6,182,212,t*Math.PI*0.5,0.2);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.4;
+   ud.edgeLines.material.color.set(0x22d3ee);ud.edgeLines.material.opacity=0.2+0.06*Math.sin(t+si);
+   ud.glowMesh.material.color.set(0x06b6d4);ud.glowMesh.material.opacity=0.05+0.03*Math.sin(t+si);
   }
-  if(dragAxis==='horizontal') applySlide(pxToWorld(dx));
-  else applySlide(pxToWorld(dy));
-});
-canvas.addEventListener('pointerup',e=>{
-  if(!dragging){ return; }
-  dragging=false;
-  const dx=e.clientX-downX, dy=e.clientY-downY, dt=Date.now()-downT;
-  const dist=Math.hypot(dx,dy);
-  if(!moved && dist<8 && dt<260 && dragPiece){
-    // TAP → rotation selon moitié gauche/droite du domino
-    const sx=screenXOf(dragPiece.mesh);
-    rotatePiece(curBoard().indexOf(dragPiece), e.clientX>sx);
-    dragPiece=null; dragAxis=null; return;
-  }
-  if(dragAxis){ commitSlide(); }
-  dragPiece=null;
-});
-canvas.addEventListener('pointercancel',()=>{ dragging=false; if(dragAxis){ assignFaces(); dragAxis=null; dragMembers=[]; } dragPiece=null; });
-function screenXOf(mesh){ const wp=new THREE.Vector3(); mesh.getWorldPosition(wp);
-  const sp=wp.clone().project(camera); const r=canvas.getBoundingClientRect(); return r.left+(sp.x*0.5+0.5)*r.width; }
-
-// navigation manuelle (debug / exploration de la pile) au clavier + dots
-document.addEventListener('keydown',e=>{
-  if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){ doUndo(); e.preventDefault(); return; }
-  if(e.key==='ArrowRight'){navRight();e.preventDefault();} else if(e.key==='ArrowLeft'){navLeft();e.preventDefault();} });
-document.getElementById('undoBtn').addEventListener('click',doUndo);
-document.getElementById('medBtn').classList.toggle('off',!showMedians);  // état initial cohérent (off par défaut)
-document.getElementById('medBtn').addEventListener('click',function(){
-  showMedians=!showMedians;
-  this.classList.toggle('off',!showMedians);
-  for(const k in _texCache)delete _texCache[k];   // purge : la clé inclut l'état médiane
-  boards.forEach(arr=>arr.forEach(p=>{ if(p)refreshTex(p); }));
-});
-updateUndoBtn();
-const dotsEl=document.getElementById('navDots');
-for(let i=0;i<NBOARDS;i++){ const d=document.createElement('div'); d.className='nav-dot'+(i===0?' active':''); d.addEventListener('click',()=>{ if(i!==mod(currentBoard)&&!busy&&!isAnimating){ if(mod(i-currentBoard)===NBOARDS-1)navLeft(); else navRight(); } }); dotsEl.appendChild(d); }
-
-// ════════════════════════════════════════════
-//  FUSION — portée du V4 : faces exposées qui se touchent, identiques (icône+état)
-// ════════════════════════════════════════════
-function cardinalNeighbors(i){ const r=[]; const x=colOf(i),y=rowOf(i);
-  if(y>0)r.push(i-COLS); if(y<ROWS-1)r.push(i+COLS); if(x>0)r.push(i-1); if(x<COLS-1)r.push(i+1); return r; }
-
-let _fuseScheduled=false;
-function checkFusions(){
-  // Si on est occupé (anim/nav/swap en cours), NE PAS abandonner : se redemander plus tard.
-  // Sinon une paire fusionnable amenée pendant une animation ne serait jamais détectée.
-  if(busy||isAnimating||swapAnim||migrating){
-    if(!_fuseScheduled){ _fuseScheduled=true; setTimeout(()=>{ _fuseScheduled=false; checkFusions(); },120); }
-    return;
-  }
-  const d=curBoard();
-  // RÉGRESSEUR (priorité sur la fusion montante) : un domino-outil "regress" en contact icône
-  // avec une pièce d'état ≥ silver la fait DESCENDRE d'un cran et se consomme. Sans condition
-  // d'état (c'est tout l'intérêt : débloquer une pièce montée trop haut). Icône identique requise.
-  for(let i=0;i<TOTAL;i++){ if(!d[i])continue; const x=colOf(i),y=rowOf(i);
-    const iR=(x<COLS-1)?i+1:-1;
-    if(iR!==-1&&d[iR]){
-      const fL=getExposedFace(d[i],'right'), fR=getExposedFace(d[iR],'left');
-      if(fL&&fR&&fL===fR){ const r=regressPair(d[i],d[iR],i,iR); if(r){ performRegress(r.toolIdx,r.tgtIdx,'h'); return; } }
-    }
-    const iB=(y<ROWS-1)?i+COLS:-1;
-    if(iB!==-1&&d[iB]){
-      const fT=getExposedFace(d[i],'bottom'), fB=getExposedFace(d[iB],'top');
-      if(fT&&fB&&fT===fB){ const r=regressPair(d[i],d[iB],i,iB); if(r){ performRegress(r.toolIdx,r.tgtIdx,'v'); return; } }
-    }
-  }
-  // CHAÎNE ADJACENTE À 3 (prioritaire sur la fusion simple) : un centre dont les DEUX
-  // contacts opposés matchent (L-C-R ou T-C-B) fusionne les trois d'un coup, façon prisme.
-  for(let i=0;i<TOTAL;i++){ const c=d[i]; if(!c||isRegress(c))continue; const x=colOf(i),y=rowOf(i);
-    // horizontal : gauche + droite
-    if(x>0&&x<COLS-1){ const iL=i-1, iR=i+1; const dL=d[iL], dR=d[iR];
-      if(dL&&dR&&!isRegress(dL)&&!isRegress(dR)){
-        const a=getExposedFace(dL,'right'), b=getExposedFace(c,'left'), e=getExposedFace(c,'right'), f=getExposedFace(dR,'left');
-        if(a&&b&&a===b&&e&&f&&e===f){ performChainFusion(iL,i,iR,'h'); return; }
-      }
-    }
-    // vertical : haut + bas
-    if(y>0&&y<ROWS-1){ const iT=i-COLS, iB=i+COLS; const dT=d[iT], dB=d[iB];
-      if(dT&&dB&&!isRegress(dT)&&!isRegress(dB)){
-        const a=getExposedFace(dT,'bottom'), b=getExposedFace(c,'top'), e=getExposedFace(c,'bottom'), f=getExposedFace(dB,'top');
-        if(a&&b&&a===b&&e&&f&&e===f){ performChainFusion(iT,i,iB,'v'); return; }
-      }
-    }
-  }
-  // SIMPLE FUSION — désormais sur ICÔNE SEULE (l'état n'est plus une condition). Le régresseur
-  // ayant été traité juste au-dessus, ces contacts d'icône donnent une fusion MONTANTE.
-  for(let i=0;i<TOTAL;i++){ if(!d[i])continue; const x=colOf(i),y=rowOf(i);
-    const iR=(x<COLS-1)?i+1:-1;
-    if(iR!==-1&&d[iR]){
-      const fL=getExposedFace(d[i],'right'), fR=getExposedFace(d[iR],'left');
-      if(fL&&fR&&fL===fR&&!(isRegress(d[i])&&isRegress(d[iR]))){ performFusion(i,iR,'h'); return; }
-    }
-    const iB=(y<ROWS-1)?i+COLS:-1;
-    if(iB!==-1&&d[iB]){
-      const fT=getExposedFace(d[i],'bottom'), fB=getExposedFace(d[iB],'top');
-      if(fT&&fB&&fT===fB&&!(isRegress(d[i])&&isRegress(d[iB]))){ performFusion(i,iB,'v'); return; }
-    }
-  }
-  // (v11 : l'état n'étant plus une condition de fusion, le flash rouge "même icône / état
-  //  différent" n'a plus lieu d'être — ce contact fusionne désormais.)
-  // tenter l'attraction magnétique (rapproche une paire séparée si couloir vide)
-  tryMagnet();
+  else{ud.glowMesh.material.opacity=0;ud.ringMesh.material.opacity=0;ud.haloSprite.material.opacity=0;ud.edgeLines.material.color.set(0xb4b4be);ud.edgeLines.material.opacity=0.12;}}});
+ renderer.render(scene,camera);
 }
-
-// ════════════════════════════════════════════
-//  ATTRACTION MAGNÉTIQUE — deux dominos fusionnables sur même ligne/colonne,
-//  rien entre eux → ils glissent l'un vers l'autre jusqu'à devenir adjacents.
-// ════════════════════════════════════════════
-function corridorEmpty(d,i1,i2,horizontal){
-  if(horizontal){ const y=rowOf(i1); for(let c=colOf(i1)+1;c<colOf(i2);c++){ if(d[y*COLS+c])return false; } }
-  else { const x=colOf(i1); for(let r=rowOf(i1)+1;r<rowOf(i2);r++){ if(d[r*COLS+x])return false; } }
-  return true;
-}
-// L'aimant attire une paire si les icônes au contact coïncident ET l'un des deux cas tient :
-//   • fusion montante : aucune des deux n'est régresseur (l'état n'importe pas — règle 1A) ;
-//   • régression : exactement UN régresseur, l'autre (la cible) d'état ≥ silver.
-// Le régresseur est donc happé exactement comme une pièce d'aimant ordinaire.
-function magnetMatch(a,dirA,b,dirB){
-  const fa=getExposedFace(a,dirA), fb=getExposedFace(b,dirB);
-  if(!fa||!fb||fa!==fb) return false;                 // icônes au contact doivent coïncider
-  const ra=isRegress(a), rb=isRegress(b);
-  if(ra&&rb) return false;                            // deux régresseurs : rien
-  if(ra!==rb){ const tgt=ra?b:a; return STATE_ORDER.indexOf(tgt.state||'white')>=1; } // régresseur ↔ cible ≥ silver
-  return true;                                        // deux pièces normales, même icône → montée (tout état)
-}
-// ════════════════════════════════════════════
-//  AIMANT-CHAÎNE BILATÉRAL (v20) — une pièce CENTRALE qui matche une proie à
-//  distance d'un côté ET de l'autre (couloirs vides des deux côtés) aspire les
-//  DEUX extrémités vers elle et fusionne en chaîne à 3. Vertical (haut+bas) ou
-//  horizontal (gauche+droite). Testé AVANT l'aimant simple (priorité au bilatéral).
-//  Le centre ne peut pas être régresseur ici (la chaîne est une montée).
-// ════════════════════════════════════════════
-// Cherche, pour un centre donné, la proie la plus proche d'un côté (couloir vide)
-// dont l'icône au contact coïncide avec la face que le centre expose vers ce côté.
-function nearestMatch(d,iC,dirCenter,dirProie,horizontal,forward){
-  const x=colOf(iC), y=rowOf(iC);
-  if(horizontal){
-    if(forward){ for(let c=x+1;c<COLS;c++){ const j=y*COLS+c; if(d[j]){ return (magnetMatch(d[iC],dirCenter,d[j],dirProie)&&corridorEmpty(d,iC,j,true))?j:-1; } } }
-    else       { for(let c=x-1;c>=0;c--){ const j=y*COLS+c; if(d[j]){ return (magnetMatch(d[j],dirProie,d[iC],dirCenter)&&corridorEmpty(d,j,iC,true))?j:-1; } } }
-  } else {
-    if(forward){ for(let r=y+1;r<ROWS;r++){ const j=r*COLS+x; if(d[j]){ return (magnetMatch(d[iC],dirCenter,d[j],dirProie)&&corridorEmpty(d,iC,j,false))?j:-1; } } }
-    else       { for(let r=y-1;r>=0;r--){ const j=r*COLS+x; if(d[j]){ return (magnetMatch(d[j],dirProie,d[iC],dirCenter)&&corridorEmpty(d,j,iC,false))?j:-1; } } }
-  }
-  return -1;
-}
-// Renvoie {iLo,iC,iHi,horizontal} si un centre matche des deux côtés, sinon null.
-function findChainMagnet(d){
-  for(let iC=0;iC<TOTAL;iC++){ const c=d[iC]; if(!c||isRegress(c))continue;
-    // vertical : haut + bas
-    const up=nearestMatch(d,iC,'top','bottom',false,false);
-    const dn=nearestMatch(d,iC,'bottom','top',false,true);
-    if(up!==-1&&dn!==-1) return {iLo:up,iC,iHi:dn,horizontal:false};
-    // horizontal : gauche + droite
-    const lf=nearestMatch(d,iC,'left','right',true,false);
-    const rg=nearestMatch(d,iC,'right','left',true,true);
-    if(lf!==-1&&rg!==-1) return {iLo:lf,iC,iHi:rg,horizontal:true};
-  }
-  return null;
-}
-function tryMagnet(){
-  if(busy||isAnimating||swapAnim||migrating)return;
-  const d=curBoard();
-  // ── PRIORITÉ : aimant-chaîne bilatéral ──
-  const ch=findChainMagnet(d);
-  if(ch){ chainMagnetMove(ch); return; }
-  // lignes : pour chaque paire gauche→droite séparée d'au moins une case
-  for(let y=0;y<ROWS;y++){
-    for(let cL=0;cL<COLS-1;cL++){ const iL=y*COLS+cL; if(!d[iL])continue;
-      for(let cR=cL+1;cR<COLS;cR++){ const iR=y*COLS+cR; if(!d[iR])continue;
-        if(cR-cL<2)break;  // déjà adjacents → checkFusions s'en occupe
-        if(magnetMatch(d[iL],'right',d[iR],'left')&&corridorEmpty(d,iL,iR,true)){
-          magnetMove(iL,iR,true); return;
-        }
-        break;  // le plus proche à droite sur cette ligne suffit
-      }
-    }
-  }
-  // colonnes : paires haut→bas
-  for(let x=0;x<COLS;x++){
-    for(let rT=0;rT<ROWS-1;rT++){ const iT=rT*COLS+x; if(!d[iT])continue;
-      for(let rB=rT+1;rB<ROWS;rB++){ const iB=rB*COLS+x; if(!d[iB])continue;
-        if(rB-rT<2)break;
-        if(magnetMatch(d[iT],'bottom',d[iB],'top')&&corridorEmpty(d,iT,iB,false)){
-          magnetMove(iT,iB,false); return;
-        }
-        break;
-      }
-    }
-  }
-}
-// rapproche les deux dominos : on glisse celui de droite/bas vers celui de gauche/haut (couloir vide garanti)
-function magnetMove(i1,i2,horizontal){
-  const d=curBoard(); const mover=d[i2];
-  const dest = horizontal ? i1+1 : i1+COLS;
-  if(dest===i2){ setTimeout(checkFusions,40); return; }
-  d[dest]=mover; d[i2]=null;
-  const from=mover.mesh.position.clone();
-  placePiece(mover,0); const to=mover.mesh.position.clone();
-  mover.mesh.position.copy(from);
-  busy=true;
-  swapAnim={pairs:[{mesh:mover.mesh,from,to}],t:0,after:()=>{ busy=false; setTimeout(checkFusions,60); }};
-}
-
-// Glisse les DEUX extrémités vers les cases adjacentes au centre (couloirs vides
-// garantis), puis déclenche la fusion chaîne à 3. ch={iLo,iC,iHi,horizontal}.
-function chainMagnetMove(ch){
-  const d=curBoard(); const {iC,horizontal}=ch;
-  let {iLo,iHi}=ch;                                   // iLo = côté "avant" (haut/gauche), iHi = côté "après" (bas/droite)
-  const destLo = horizontal ? iC-1 : iC-COLS;         // case adjacente au centre, côté iLo
-  const destHi = horizontal ? iC+1 : iC+COLS;         // case adjacente au centre, côté iHi
-  const pairs=[]; busy=true;
-  const moveOne=(src,dest)=>{ if(src===dest)return; const mv=d[src]; d[dest]=mv; d[src]=null;
-    const from=mv.mesh.position.clone(); placePiece(mv,0); const to=mv.mesh.position.clone();
-    mv.mesh.position.copy(from); pairs.push({mesh:mv.mesh,from,to}); };
-  moveOne(iLo,destLo); moveOne(iHi,destHi);
-  if(!pairs.length){ busy=false; setTimeout(checkFusions,40); return; }
-  swapAnim={pairs,t:0,after:()=>{ busy=false;
-    // après convergence : les trois sont alignés et adjacents → fusion chaîne
-    performChainFusion(destLo,iC,destHi,horizontal?'h':'v');
-  }};
-}
-
-// FUSION CHAÎNE À 3 (portée de doChainFusion du prisme) : les faces de contact
-// (centre↔lo et centre↔hi) s'annulent ; les faces RESTANTES des extrémités
-// forment le résultat, posé au CENTRE, état = max des trois +1. Anim move→fade→appear.
-function performChainFusion(iLo,iC,iHi,dir){
-  busy=true;
-  const d=curBoard(); const pLo=d[iLo], pC=d[iC], pHi=d[iHi];
-  if(!pLo||!pC||!pHi){ busy=false; setTimeout(checkFusions,40); return; }
-  // faces restantes des extrémités (le côté qui NE touche PAS le centre)
-  const nf1 = getRemainingFace(pLo, dir==='h'?'right':'bottom') || pLo.face2;  // face loin du centre, côté lo
-  const nf2 = getRemainingFace(pHi, dir==='h'?'left':'top')   || pHi.face2;    // face loin du centre, côté hi
-  const hiState = STATE_ORDER[Math.max(
-    STATE_ORDER.indexOf(pLo.state||'white'),
-    STATE_ORDER.indexOf(pC.state||'white'),
-    STATE_ORDER.indexOf(pHi.state||'white'))];
-  const upState = nextStateName(hiState);
-  const newRot = dir==='h'?90:0;
-  showToast('Chaîne ×3 ! → '+upState);
-  const m1=pLo.mesh, m2=pC.mesh, m3=pHi.mesh;
-  const applyResult=()=>{
-    if(pLo.mesh)removeDomino(pLo.mesh); d[iLo]=null;
-    if(pHi.mesh)removeDomino(pHi.mesh); d[iHi]=null;
-    if(dir==='h'){ pC.face1=nf2; pC.face2=nf1; pC.rotation=90; } else { pC.face1=nf1; pC.face2=nf2; pC.rotation=0; }
-    pC.state=upState; pC.state1=upState; pC.state2=upState;
-    refreshTex(pC); placePiece(pC); pC._settle=clock.getElapsedTime();
-    const ud=pC.mesh.userData; ud.faceMesh.material.opacity=1;
-    if(ud.shadow&&ud.shadow.material)ud.shadow.material.opacity=0.45;
-    pC.mesh.children.forEach(c=>{ if(Array.isArray(c.material)){ if(c.material[0])c.material[0].opacity=0.35; if(c.material[1])c.material[1].opacity=0.5; } });
-  };
-  if(!m1||!m2||!m3){ applyResult(); pC.mesh&&pC.mesh.scale.set(1,1,1); assignFaces(); updateUI(); busy=false; setTimeout(()=>{checkFusions();checkCompletion();},60); return; }
-  const p1s=m1.position.clone(), p2s=m2.position.clone(), p3s=m3.position.clone();
-  const mid=p2s.clone();
-  let elapsed=0; const durMove=220,durFade=110,durAppear=240;
-  const moveAnim=(now)=>{
-    if(!moveAnim._last)moveAnim._last=now;
-    elapsed+=now-moveAnim._last; moveAnim._last=now;
-    const p=Math.min(elapsed/durMove,1), e=easeInOutQuad(p);
-    m1.position.lerpVectors(p1s,mid,e); m3.position.lerpVectors(p3s,mid,e);
-    const sc=1-0.4*e; m1.scale.set(sc,sc,sc); m2.scale.set(sc,sc,sc); m3.scale.set(sc,sc,sc);
-    if(p<1)requestAnimationFrame(moveAnim);
-    else{ elapsed=0; moveAnim._last=null; requestAnimationFrame(fadeAnim); }
-  };
-  const fadeAnim=(now)=>{
-    if(!fadeAnim._last)fadeAnim._last=now;
-    elapsed+=now-fadeAnim._last; fadeAnim._last=now;
-    const p=Math.min(elapsed/durFade,1);
-    [m1,m2,m3].forEach(m=>m.traverse(c=>{ if(c.material&&'opacity'in c.material)c.material.opacity=(1-p); }));
-    if(p<1)requestAnimationFrame(fadeAnim);
-    else{
-      applyResult();
-      pC.mesh.scale.set(0.3,0.3,0.3); elapsed=0; fadeAnim._last=null;
-      const appearAnim=(now2)=>{
-        if(!appearAnim._last)appearAnim._last=now2;
-        elapsed+=now2-appearAnim._last; appearAnim._last=now2;
-        const p2v=Math.min(elapsed/durAppear,1), e2=easeOutCubic(p2v);
-        const sc2=0.3+0.7*e2; pC.mesh.scale.set(sc2,sc2,sc2);
-        if(p2v<1)requestAnimationFrame(appearAnim);
-        else{ pC.mesh.scale.set(1,1,1); assignFaces(); updateUI(); busy=false; setTimeout(()=>{checkFusions();checkCompletion();},50); }
-      };
-      requestAnimationFrame(appearAnim);
-    }
-  };
-  requestAnimationFrame(moveAnim);
-}
-
-function nextStateName(st){ const i=STATE_ORDER.indexOf(st||'white'); return i<STATE_ORDER.length-1?STATE_ORDER[i+1]:STATE_ORDER[i]; }
-
-// ─── RÉGRESSEUR (outil de descente d'état) ───
-// Vrai ssi exactement une des deux pièces est un régresseur ET l'autre (la cible) est d'état
-// ≥ silver (descendre un blanc n'a pas de sens). Renvoie les index {toolIdx, tgtIdx} ou null.
-function isRegress(p){ return !!(p&&p.regress); }
-function regressPair(a,b,ia,ib){
-  const ra=isRegress(a), rb=isRegress(b);
-  if(ra===rb) return null;                       // aucun, ou les deux : pas un cas régresseur
-  const tool=ra?a:b, target=ra?b:a;
-  const tIdx=ra?ia:ib, gIdx=ra?ib:ia;
-  if(STATE_ORDER.indexOf(target.state||'white')<1) return null;  // cible doit être ≥ silver
-  return { toolIdx:tIdx, tgtIdx:gIdx };
-}
-// Consomme le régresseur (toolIdx) et fait descendre la cible (tgtIdx) d'un cran.
-function performRegress(toolIdx,tgtIdx,dir){
-  busy=true;
-  const d=curBoard(); const tool=d[toolIdx], tgt=d[tgtIdx];
-  const downState=demoteState(tgt.state,1);
-  showToast('Régression → '+downState);
-  const m1=tgt.mesh, m2=tool.mesh;
-  if(!m1||!m2){
-    // fallback sans anim
-    flashFusion(tgt);
-    if(tool.mesh)removeDomino(tool.mesh); d[toolIdx]=null;
-    tgt.state=downState; tgt.state1=downState; tgt.state2=downState;
-    refreshTex(tgt); placePiece(tgt,0); tgt._settle=clock.getElapsedTime();
-    setTimeout(()=>{ assignFaces(); updateUI(); busy=false; checkFusions(); checkCompletion(); },120);
-    return;
-  }
-  // ── MÊME SÉQUENCE QUE LA FUSION (move → fade → appear), accélérée ──
-  // L'outil (m2) converge vers la cible (m1), les deux se contractent, fade,
-  // puis la cible RÉAPPARAÎT démotée. Symétrie exacte de la montée.
-  const p1s=m1.position.clone(), p2s=m2.position.clone();
-  const mid=p1s.clone().add(p2s).multiplyScalar(0.5);
-  let elapsed=0; const durMove=200,durFade=110,durAppear=220;
-  const moveAnim=(now)=>{
-    if(!moveAnim._last)moveAnim._last=now;
-    elapsed+=now-moveAnim._last; moveAnim._last=now;
-    const p=Math.min(elapsed/durMove,1), e=easeInOutQuad(p);
-    m1.position.lerpVectors(p1s,mid,e); m2.position.lerpVectors(p2s,mid,e);
-    const sc=1-0.3*e; m1.scale.set(sc,sc,sc); m2.scale.set(sc,sc,sc);
-    if(p<1)requestAnimationFrame(moveAnim);
-    else{ elapsed=0; moveAnim._last=null; requestAnimationFrame(fadeAnim); }
-  };
-  const fadeAnim=(now)=>{
-    if(!fadeAnim._last)fadeAnim._last=now;
-    elapsed+=now-fadeAnim._last; fadeAnim._last=now;
-    const p=Math.min(elapsed/durFade,1);
-    m1.traverse(c=>{ if(c.material&&'opacity'in c.material)c.material.opacity=(1-p); });
-    m2.traverse(c=>{ if(c.material&&'opacity'in c.material)c.material.opacity=(1-p); });
-    if(p<1)requestAnimationFrame(fadeAnim);
-    else{
-      // mutation au creux : l'outil se consomme, la cible descend d'un cran
-      if(tool.mesh)removeDomino(tool.mesh); d[toolIdx]=null;
-      tgt.state=downState; tgt.state1=downState; tgt.state2=downState;
-      refreshTex(tgt); placePiece(tgt,0); tgt._settle=clock.getElapsedTime();
-      const ud=tgt.mesh.userData;
-      ud.faceMesh.material.opacity=1;
-      if(ud.shadow&&ud.shadow.material)ud.shadow.material.opacity=0.45;
-      tgt.mesh.children.forEach(c=>{
-        if(Array.isArray(c.material)){ if(c.material[0])c.material[0].opacity=0.35; if(c.material[1])c.material[1].opacity=0.5; }
-      });
-      tgt.mesh.scale.set(0.3,0.3,0.3); elapsed=0; fadeAnim._last=null;
-      const appearAnim=(now2)=>{
-        if(!appearAnim._last)appearAnim._last=now2;
-        elapsed+=now2-appearAnim._last; appearAnim._last=now2;
-        const p2v=Math.min(elapsed/durAppear,1), e2=easeOutCubic(p2v);
-        const sc2=0.3+0.7*e2; tgt.mesh.scale.set(sc2,sc2,sc2);
-        if(p2v<1)requestAnimationFrame(appearAnim);
-        else{ tgt.mesh.scale.set(1,1,1); assignFaces(); updateUI(); busy=false; checkFusions(); checkCompletion(); }
-      };
-      requestAnimationFrame(appearAnim);
-    }
-  };
-  requestAnimationFrame(moveAnim);
-}
-
-// Fusion simple V4 : les deux faces qui se touchent disparaissent, les faces partenaires
-// montent d'un état et forment le domino résultat, posé sur la case de d1.
-// easings portés du prisme (utilisés par l'animation de fusion)
-function easeInOutQuad(t){ return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2; }
-function easeOutCubic(t){ return 1-Math.pow(1-t,3); }
-function performFusion(i1,i2,dir){
-  busy=true;
-  const d=curBoard(); const p1=d[i1], p2=d[i2];
-  const fuseDir1 = dir==='h'?'right':'bottom';
-  const fuseDir2 = dir==='h'?'left':'top';
-  const nf1 = getRemainingFace(p1,fuseDir1) || p1.face2;
-  const nf2 = getRemainingFace(p2,fuseDir2) || p2.face2;
-  // v11 (règle 1A) : l'état du résultat est UN CRAN AU-DESSUS DU PLUS HAUT des deux pièces,
-  // sur la seule base de l'icône (l'égalité d'état n'est plus requise). blanc+blanc→silver,
-  // gold+silver→emerald, gold+gold→emerald.
-  const hi1 = STATE_ORDER.indexOf(p1.state||'white');
-  const hi2 = STATE_ORDER.indexOf(p2.state||'white');
-  const upState = nextStateName(STATE_ORDER[Math.max(hi1,hi2)]);
-  const newRot = dir==='h'?90:0;
-  showToast('Fusion ! → '+upState);
-
-  const m1=p1.mesh, m2=p2.mesh;
-  if(!m1||!m2){
-    // fallback sans anim (sécurité)
-    if(p2.mesh)removeDomino(p2.mesh); d[i2]=null;
-    if(dir==='h'){ p1.face1=nf2; p1.face2=nf1; p1.rotation=90; } else { p1.face1=nf1; p1.face2=nf2; p1.rotation=0; }
-    p1.state=upState; p1.state1=upState; p1.state2=upState; refreshTex(p1); placePiece(p1);
-    setTimeout(()=>{ assignFaces(); updateUI(); busy=false; checkFusions(); checkCompletion(); },60);
-    return;
-  }
-  // ── SÉQUENCE D'ANIMATION PORTÉE À L'IDENTIQUE DE prisme : move(400) → fade(200) → appear(400) ──
-  const p1s=m1.position.clone(), p2s=m2.position.clone();
-  const mid=p1s.clone().add(p2s).multiplyScalar(0.5);
-  let elapsed=0; const durMove=200,durFade=110,durAppear=220;
-  const moveAnim=(now)=>{
-    if(!moveAnim._last)moveAnim._last=now;
-    elapsed+=now-moveAnim._last; moveAnim._last=now;
-    const p=Math.min(elapsed/durMove,1), e=easeInOutQuad(p);
-    m1.position.lerpVectors(p1s,mid,e); m2.position.lerpVectors(p2s,mid,e);
-    const sc=1-0.3*e; m1.scale.set(sc,sc,sc); m2.scale.set(sc,sc,sc);
-    if(p<1)requestAnimationFrame(moveAnim);
-    else{ elapsed=0; moveAnim._last=null; requestAnimationFrame(fadeAnim); }
-  };
-  const fadeAnim=(now)=>{
-    if(!fadeAnim._last)fadeAnim._last=now;
-    elapsed+=now-fadeAnim._last; fadeAnim._last=now;
-    const p=Math.min(elapsed/durFade,1);
-    m1.traverse(c=>{ if(c.material&&'opacity'in c.material)c.material.opacity=(1-p); });
-    m2.traverse(c=>{ if(c.material&&'opacity'in c.material)c.material.opacity=(1-p); });
-    if(p<1)requestAnimationFrame(fadeAnim);
-    else{
-      // mutation logique au creux de la fusion : p1 devient le résultat, p2 disparaît
-      if(p2.mesh)removeDomino(p2.mesh); d[i2]=null;
-      if(dir==='h'){ p1.face1=nf2; p1.face2=nf1; p1.rotation=90; } else { p1.face1=nf1; p1.face2=nf2; p1.rotation=0; }
-      p1.state=upState; p1.state1=upState; p1.state2=upState;
-      refreshTex(p1); placePiece(p1); p1._settle=clock.getElapsedTime();
-      // restaurer l'opacité après le fade : faceMesh + corps + ombre.
-      // (edge/glow/ring/halo sont réécrits chaque frame par animate selon l'état)
-      const ud=p1.mesh.userData;
-      ud.faceMesh.material.opacity=1;
-      if(ud.shadow&&ud.shadow.material)ud.shadow.material.opacity=0.45;
-      // le corps extrudé a deux matériaux (faces 0.35 / côtés 0.5)
-      p1.mesh.children.forEach(c=>{
-        if(Array.isArray(c.material)){ if(c.material[0])c.material[0].opacity=0.35; if(c.material[1])c.material[1].opacity=0.5; }
-      });
-      // appear : le résultat surgit en scale 0.3 → 1
-      p1.mesh.scale.set(0.3,0.3,0.3); elapsed=0; fadeAnim._last=null;
-      const appearAnim=(now2)=>{
-        if(!appearAnim._last)appearAnim._last=now2;
-        elapsed+=now2-appearAnim._last; appearAnim._last=now2;
-        const p2v=Math.min(elapsed/durAppear,1), e2=easeOutCubic(p2v);
-        const sc2=0.3+0.7*e2; p1.mesh.scale.set(sc2,sc2,sc2);
-        if(p2v<1)requestAnimationFrame(appearAnim);
-        else{ p1.mesh.scale.set(1,1,1); assignFaces(); updateUI(); busy=false; checkFusions(); checkCompletion(); }
-      };
-      requestAnimationFrame(appearAnim);
-    }
-  };
-  requestAnimationFrame(moveAnim);
-}
-
-// ─── COMPLÉTION DU PLAN : cible atteinte → le résultat descend sur la case imposée, puis on avance ───
-let migrating=false;
-function countPieces(arr){ let n=0; for(const p of arr) if(p) n++; return n; }
-function checkCompletion(){
-  // v20 : PLATEAU UNIQUE — plus de gradation ni de migration entre plans.
-  // (Conservé débranché : la complétion/objectif reviendra par config sur de futurs niveaux.)
-  return;
-}
-
-function migrateDown(result){
-  migrating=true; busy=true;
-  const nextBoard=mod(currentBoard+1);
-  // l'état du résultat est RÉTROGRADÉ en traversant (coût de la migration, variable par plan)
-  const landedState=demoteState(result.state, demoteFor(nextBoard));
-  // poser une copie du résultat (rétrogradé) sur la case d'accueil imposée du plan suivant (si libre)
-  if(!boards[nextBoard][LANDING_IDX]){
-    const mesh=createDominoMesh(result.face1,result.face2,landedState,false,0); mesh.visible=false; addDomino(mesh,nextBoard);
-    boards[nextBoard][LANDING_IDX]={
-      state:landedState, state1:landedState, state2:landedState,
-      face1:result.face1, face2:result.face2, rotation:0, mesh, face:nextBoard
-    };
-  }
-  // retirer le résultat du plan de tête (il a "traversé")
-  const head=boards[currentBoard];
-  const hi=head.indexOf(result); if(hi>=0){ if(result.mesh)removeDomino(result.mesh); head[hi]=null; }
-  assignFaces();
-  const demoted = landedState!==result.state;
-  showToast(demoted ? ('Traversée : '+result.state+' → '+landedState) : 'Niveau résolu → on avance');
-  // déclenche le zoom-traversant vers le plan suivant
-  setTimeout(()=>{ migrating=false; busy=false; navRight(); },140);
-}
-function flashFusion(p){ if(!p.mesh)return; const g=p.mesh.userData.glow;
-  g.material.color.set(0xffffff); g.material.opacity=0.85; p.mesh.scale.set(1.15,1.15,1.15);
-  setTimeout(()=>{ p.mesh.scale.set(1,1,1); g.material.opacity=0; },300); }
-const clock=new THREE.Clock(); let last=0;
-// Cadre la pile pour qu'elle tienne à l'écran quel que soit le format (portrait mobile inclus).
-function fitCamera(){
-  const w=window.innerWidth, h=window.innerHeight, aspect=w/h;
-  renderer.setSize(w,h); camera.aspect=aspect;
-  const vFOV=camera.fov*Math.PI/180;
-  // Comme prisme V11 : la grille occupe le maximum de largeur en ne laissant qu'un petit
-  // interstice de chaque côté (~10px). On cadre en PRIORITÉ sur la largeur.
-  const sidePx=10;                                         // interstice latéral souhaité
-  const marginW=(w+2*sidePx)/w;                            // largeur cible = écran - 2*interstice
-  const needW=(FACE_W*marginW)/(2*Math.tan(vFOV/2)*aspect);// distance pour remplir la largeur
-  const needH=(FACE_H*1.0)/(2*Math.tan(vFOV/2));           // garde-fou hauteur (ne pas couper)
-  camera.position.z=Math.max(needW,needH);
-  camera.position.set(0,0,camera.position.z); camera.lookAt(0,0,0);
-  camera.updateProjectionMatrix();
-}
-camera.position.set(0,0,CAM_Z); camera.lookAt(0,0,0); fitCamera();
-window.addEventListener('resize',fitCamera);
-function animate(){ requestAnimationFrame(animate); const t=clock.getElapsedTime(); const dt=t-last; last=t;
-  if(isAnimating){
-    // ROTATION DU CUBE : slerp doux vers l'orientation cible (façon mada)
-    cubeGroup.quaternion.slerp(targetQuat,0.12);
-    if(1-Math.abs(cubeGroup.quaternion.dot(targetQuat))<0.0001){ cubeGroup.quaternion.copy(targetQuat); onRotationComplete(); }
-  }
-  tickSwap(dt);
-  tickRot(dt);
-  // faces à rendre : la courante, et pendant la rotation aussi la cible (les autres masquées)
-  const targetBoard = isAnimating ? mod(currentBoard+navDir) : currentBoard;
-  boards.forEach((arr,f)=>arr.forEach((p,si)=>{ if(!p||!p.mesh)return; const ud=p.mesh.userData;
-    const shown = (f===currentBoard)||(isAnimating&&f===targetBoard);
-    p.mesh.visible = shown;
-    if(!shown) return;
-    if(!swapAnim){ p.mesh.position.z = SAT_LIFT; }
-    // balancement décoratif (suspendu pendant rotation cube / fusion / autres anims bloquantes)
-    if(p.mesh.visible&&!isAnimating&&!swapAnim&&!busy&&!(rotAnim&&rotAnim.mesh===p.mesh)&&p.baseQuat){ const ph=t*1.2+si*1.7;
-      const amp=Math.min(1,(t-(p._settle||0)));
-      const bq=new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,Math.cos(ph*0.7)*0.008*amp)); p.mesh.quaternion.copy(p.baseQuat).multiply(bq); }
-    const st=p.state||'white';
-    if(st==='cosmic'){
-      drawCosmicRing(ud.ringCanvas,t*Math.PI/2);ud.ringTex.needsUpdate=true;ud.ringMesh.material.opacity=1;
-      drawHalo(ud.haloCanvas,196,181,253,t*Math.PI,0.5,255,0,110);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.8;
-      const cp=t*1.5+si;ud.edgeLines.material.color.setRGB(0.5+Math.sin(cp)*0.3,Math.sin(cp+2.1)*0.3+0.2,0.5+Math.sin(cp+4.2)*0.3);ud.edgeLines.material.opacity=0.5+Math.sin(t*2)*0.15;
-      ud.glowMesh.material.color.set(0x8338ec);ud.glowMesh.material.opacity=0.2+0.12*Math.sin(t*2+si);
-    } else if(st==='supernovae'||st==='plasma'){
-      // supernovae du prisme ; plasma (état max stack) = même rendu, légèrement plus rapide/intense
-      drawSupernovaeRing(ud.ringCanvas,t*Math.PI*(st==='plasma'?1:2/3));ud.ringTex.needsUpdate=true;ud.ringMesh.material.opacity=1;
-      const hr=255,hg=st==='plasma'?32:140,hb=st==='plasma'?96:0;
-      drawHalo(ud.haloCanvas,255,235,59,t*Math.PI*1.25,st==='plasma'?0.75:0.6,hr,hg,hb);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.9;
-      ud.edgeLines.material.color.setRGB(1,0.4+Math.sin(t*2+si)*0.3,Math.sin(t*1.5)*0.15);ud.edgeLines.material.opacity=0.5+Math.sin(t*2.5)*0.12;
-      ud.glowMesh.material.color.set(st==='plasma'?0xff2060:0xff8c00);ud.glowMesh.material.opacity=0.3+0.2*Math.sin(t*2.5+si);
-    } else if(st==='emerald'){
-      ud.ringMesh.material.opacity=0;
-      drawHalo(ud.haloCanvas,52,211,153,t*Math.PI*0.8,0.35,5,150,105);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.7;
-      ud.edgeLines.material.color.set(0x34d399);ud.edgeLines.material.opacity=0.3+0.1*Math.sin(t*1.5+si);
-      ud.glowMesh.material.color.set(0x34d399);ud.glowMesh.material.opacity=0.15+0.1*Math.sin(t*1.5+si);
-    } else if(st==='gold'){
-      ud.ringMesh.material.opacity=0;
-      drawHalo(ud.haloCanvas,255,235,120,t*Math.PI*0.6,0.25,255,170,0);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.5;
-      ud.edgeLines.material.color.set(0xffd700);ud.edgeLines.material.opacity=0.25+0.08*Math.sin(t*1.2+si);
-      ud.glowMesh.material.color.set(0xffd700);ud.glowMesh.material.opacity=0.08+0.05*Math.sin(t*1.2+si);
-    } else if(st==='silver'){
-      ud.ringMesh.material.opacity=0;
-      drawHalo(ud.haloCanvas,34,211,238,t*Math.PI*0.5,0.2,6,120,160);ud.haloTex.needsUpdate=true;ud.haloSprite.material.opacity=0.4;
-      ud.edgeLines.material.color.set(0x22d3ee);ud.edgeLines.material.opacity=0.2+0.06*Math.sin(t+si);
-      ud.glowMesh.material.color.set(0x06b6d4);ud.glowMesh.material.opacity=0.05+0.03*Math.sin(t+si);
-    } else {
-      ud.glowMesh.material.opacity=0;ud.ringMesh.material.opacity=0;ud.haloSprite.material.opacity=0;
-      ud.edgeLines.material.color.set(0xd2d2dc);ud.edgeLines.material.opacity=0.5;
-    }
-    ud.faceMesh.material.opacity = 1;
-  }));
-  // grilles : visibles seulement pour la face courante (+ cible pendant la rotation)
-  gridMeshes.forEach(g=>{ const f=g.userData.face;
-    g.visible = (f===currentBoard)||(isAnimating&&f===targetBoard);
-    g.position.set(0,0,0); g.material.opacity=0.5; });
-  renderer.render(scene,camera);
-}
-buildBoards(); assignFaces(); updateUI(); animate();
+for(let f=0;f<NUM_FACES;f++)initFace(f);
+// Initialisation des portes — générées avec le seed du face 0, propagées sur tous les layers
+(function(){
+ PORTE_POSITIONS.forEach((pi,k)=>{
+  const f1=BANK[Math.floor(srand(SEEDS[0]+7+k*100)()*BANK.length)];
+  const f2=BANK[Math.floor(srand(SEEDS[0]+77+k*100)()*BANK.length)];
+  const porteDm={face1:f1,face2:f2,rotation:0,state:'white'};
+  for(let f=0;f<NUM_FACES;f++)allDom[f][pi]={...porteDm};
+ });
+})();
+buildSats();assignFaces();updCubeTexFromPorte();refreshZoom();camera.position.set(0,0,targetCamZ);updateUI();updateScore();animate();
 </script>
 </body>
 </html>
