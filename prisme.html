@@ -251,7 +251,7 @@ function easeOutCubic(t){return 1-Math.pow(1-t,3);}
 function easeInOutQuad(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
 // ══ MÉCANIQUE DE POUSSÉE (swipe directionnel sur un domino) ══
 function dirDelta(dir){return dir==='left'?{dx:-1,dy:0}:dir==='right'?{dx:1,dy:0}:dir==='up'?{dx:0,dy:-1}:{dx:0,dy:1};}
-function trySwap(fromIdx,dir,dist){
+function trySwap(fromIdx,dir,dist,rs){
  if(gameAnim||isNav)return;
  const fi=mod(currentIdx);
  const{x,y}=getPos(fromIdx);const d=dirDelta(dir);
@@ -263,13 +263,13 @@ function trySwap(fromIdx,dir,dist){
   path.push(idx);
  }
  if(path.length===0)return;
- performSwap(fromIdx,path,dir);
+ performSwap(fromIdx,path,dir,rs);
 }
-function performSwap(fromIdx,path,dir){
+function performSwap(fromIdx,path,dir,rs){
  const fi=mod(currentIdx);
  const dFrom=getDom(fi,fromIdx);if(!dFrom)return;
  saveState();gameAnim=true;
- const rotSign=(dir==='left'||dir==='up')?-1:1;
+ const rotSign=rs||((dir==='left'||dir==='up')?-1:1);
  const movers=[];
  const tgt=(idx)=>{const p=getPos(idx),l=g2l(p.x,p.y);return new THREE.Vector3(l.x,l.y,HALF+SAT_LIFT);};
  const addMover=(srcIdx)=>{const s=sats.find(z=>z.tab===fi&&z.gi===srcIdx);return s?{sat:s,mesh:s.mesh,start:s.mesh.position.clone()}:null;};
@@ -278,21 +278,20 @@ function performSwap(fromIdx,path,dir){
   const nIdx=path[0];const dN=getDom(fi,nIdx);
   const mF=addMover(fromIdx),mN=addMover(nIdx);
   if(!mF||!mN){gameAnim=false;return;}
-  mF.end=tgt(nIdx);mN.end=tgt(fromIdx);mF.rotDelta=0;mN.rotDelta=rotSign*90;
+  mF.end=tgt(nIdx);mN.end=tgt(fromIdx);mF.rotDelta=rotSign*90;mN.rotDelta=0;
   movers.push(mF,mN);
-  result=()=>{const a={...dN,rotation:((dN.rotation+rotSign*90)%360+360)%360};setDom(fi,fromIdx,a);setDom(fi,nIdx,dFrom);};
+  result=()=>{const a={...dFrom,rotation:((dFrom.rotation+rotSign*90)%360+360)%360};setDom(fi,nIdx,a);setDom(fi,fromIdx,dN);};
  }else{
   const bIdx=path[0],cIdx=path[1];const dB=getDom(fi,bIdx),dC=getDom(fi,cIdx);
   const mF=addMover(fromIdx),mB=addMover(bIdx),mC=addMover(cIdx);
   if(!mF||!mB||!mC){gameAnim=false;return;}
-  mF.end=tgt(cIdx);mF.rotDelta=0;
-  mB.end=tgt(fromIdx);mB.rotDelta=rotSign*180;
-  mC.end=tgt(bIdx);mC.rotDelta=rotSign*90;
+  mF.end=tgt(cIdx);mF.rotDelta=rotSign*180;
+  mB.end=tgt(fromIdx);mB.rotDelta=0;
+  mC.end=tgt(bIdx);mC.rotDelta=0;
   movers.push(mF,mB,mC);
   result=()=>{
-   const b={...dB,rotation:((dB.rotation+rotSign*180)%360+360)%360};
-   const c={...dC,rotation:((dC.rotation+rotSign*90)%360+360)%360};
-   setDom(fi,fromIdx,b);setDom(fi,bIdx,c);setDom(fi,cIdx,dFrom);
+   const f={...dFrom,rotation:((dFrom.rotation+rotSign*180)%360+360)%360};
+   setDom(fi,fromIdx,dB);setDom(fi,bIdx,dC);setDom(fi,cIdx,f);
   };
  }
  movers.forEach(m=>{m.q0=m.sat.baseQuat?m.sat.baseQuat.clone():m.mesh.quaternion.clone();m.q1=m.q0.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-m.rotDelta*Math.PI/180));m.mesh.userData._noBreath=true;});
@@ -571,10 +570,10 @@ canvas.addEventListener('pointerup',e=>{if(!pS)return;const dx=e.clientX-pS.x,dy
  if((pSat||pCb)&&(adx>=15||ady>=15)){
   const fromIdx=pSat?pSat.gi:PORTE_POSITIONS[0];
   const stepPx=Math.min(window.innerWidth,window.innerHeight)*0.16;
-  let dir,dist;
-  if(adx>ady){dir=dx>0?'right':'left';dist=Math.min(Math.max(1,Math.round(adx/stepPx)),2);}
-  else{dir=dy>0?'down':'up';dist=Math.min(Math.max(1,Math.round(ady/stepPx)),2);}
-  trySwap(fromIdx,dir,dist);
+  let dir,dist,rs;
+  if(adx>ady){dir=dx>0?'right':'left';dist=Math.min(Math.max(1,Math.round(adx/stepPx)),2);rs=dy<0?-1:1;}
+  else{dir=dy>0?'down':'up';dist=Math.min(Math.max(1,Math.round(ady/stepPx)),2);rs=dx>0?1:-1;}
+  trySwap(fromIdx,dir,dist,rs);
  }
  // Geste partant du vide => NAVIGATION entre tabs
  else if(!pSat&&!pCb&&Math.hypot(dx,dy)>=15){
