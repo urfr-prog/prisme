@@ -48,7 +48,7 @@ body{background:#12131a;display:flex;flex-direction:column;align-items:center;ju
 <div style="display:none"><span id="scoreVal">0</span><span id="comboVal">×1</span><span id="bestVal">0</span></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const COLS=5,ROWS=9,TOTAL=45,PORTE_POSITIONS=[22],NUM_FACES=2;
+const COLS=5,ROWS=9,TOTAL=45,PORTE_POSITIONS=[],NUM_FACES=1;
 const isPorte=i=>PORTE_POSITIONS.includes(i);
 const STATE_ORDER=['white','silver','gold','emerald','cosmic','supernovae'];
 const STATE_MULT={white:1,silver:2,gold:3,emerald:5,cosmic:10,supernovae:20};
@@ -147,7 +147,7 @@ resize();window.addEventListener('resize',resize);
 const cubeGroup=new THREE.Group();scene.add(cubeGroup);
 // Porte cube
 const pMats=[];for(let i=0;i<6;i++)pMats.push(new THREE.MeshBasicMaterial({transparent:true}));
-const pMesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),pMats);pMesh.userData.isCube=true;cubeGroup.add(pMesh);
+const pMesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),pMats);pMesh.userData.isCube=true;pMesh.visible=false;cubeGroup.add(pMesh);
 function updCubeTexFromPorte(){
  // Affiche le domino-porte principal (index 7) sur le cube central
  // Comme les portes sont synchronisées, on lit depuis allDom[0]
@@ -216,25 +216,25 @@ function refreshZoom(){
  targetCamZ=gridH/2/Math.tan(vFov/2)+1.2;
  targetCamX=0;
 }
-function navRight(){if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='y';
+function navRight(){return;if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='y';
  const qR=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/2);
  const ni=mod(currentIdx+1);
  sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qR);});
  targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
  sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
-function navLeft(){if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='y';
+function navLeft(){return;if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='y';
  const qL=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
  const ni=mod(currentIdx-1);
  sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qL);});
  targetQuat.setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/2);
  sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
-function navUp(){if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='x';
+function navUp(){return;if(busy||isNav)return;busy=true;isNav=true;navDir=1;navAxis='x';
  const qTop=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),-Math.PI/2);
  const ni=mod(currentIdx+1);
  sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qTop);});
  targetQuat.setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
  sats.forEach(s=>{if(s.tab===mod(currentIdx)||s.tab===ni)s.mesh.visible=true;});}
-function navDown(){if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='x';
+function navDown(){return;if(busy||isNav)return;busy=true;isNav=true;navDir=-1;navAxis='x';
  const qBot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
  const ni=mod(currentIdx-1);
  sats.forEach(s=>{if(s.tab===ni&&!isPorte(s.gi))placeSat(s,qBot);});
@@ -245,91 +245,70 @@ function onNavDone(){currentIdx=mod(currentIdx+navDir);cubeGroup.quaternion.iden
 let gameAnim=false;
 function saveState(){const fi=mod(currentIdx);allHist[fi].push({allDom:JSON.parse(JSON.stringify(allDom))});allScoreHist[fi].push(score);if(allHist[fi].length>20){allHist[fi].shift();allScoreHist[fi].shift();}}
 function undo(){const fi=mod(currentIdx);if(!allHist[fi].length||gameAnim||isNav)return;const s=allHist[fi].pop();allDom=s.allDom;score=allScoreHist[fi].pop();rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();updateScore();}
-// Rotation animée par quaternion local, compatible avec le breathing
+// (Rotation au clic supprimée — remplacée par la mécanique de poussée)
 let rotAnimActive=null;
-function rotateDom(gi){
- if(gameAnim||isNav||rotAnimActive)return;
- const fi=mod(currentIdx),dm=getDom(fi,gi);if(!dm)return;
- // Pour les portes, le satellite unique est sur tab 0; sinon on cherche sur le layer courant
- const sat=isPorte(gi)?sats.find(s=>s.tab===0&&s.gi===gi):sats.find(s=>s.tab===fi&&s.gi===gi);
- if(!sat||!sat.baseQuat)return;
- saveState();gameAnim=true;
- const localRot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-Math.PI/2);
- const startQ=sat.baseQuat.clone();
- const endQ=sat.baseQuat.clone().multiply(localRot);
- rotAnimActive={sat,startQ,endQ,elapsed:0,dur:250,gi,fi};
-}
-function rotatePorte(){rotateDom(PORTE_POSITIONS[0]);}
-function updateRotAnim(dt){
- if(!rotAnimActive)return;
- rotAnimActive.elapsed+=dt*1000;
- const p=Math.min(rotAnimActive.elapsed/rotAnimActive.dur,1),e=easeOutCubic(p);
- rotAnimActive.sat.mesh.quaternion.copy(rotAnimActive.startQ).slerp(rotAnimActive.endQ,e);
- if(p>=1){
-  const gi=rotAnimActive.gi,fi=rotAnimActive.fi;
-  const dm=getDom(fi,gi);
-  if(dm){
-   dm.rotation=(dm.rotation+90)%360;
-   // Si position-porte, propager la nouvelle rotation à tous les layers
-   if(isPorte(gi)){for(let f=0;f<NUM_FACES;f++)if(f!==fi)allDom[f][gi]={...dm};}
-  }
-  rotAnimActive.sat.mesh.quaternion.copy(rotAnimActive.sat.baseQuat);
-  updSatTex(rotAnimActive.sat);
-  if(isPorte(gi))updCubeTexFromPorte();
-  rotAnimActive=null;
-  gameAnim=false;
-  setTimeout(()=>checkFusions(),50);
- }
-}
-function detectDiag(dx,dy){const ax=Math.abs(dx),ay=Math.abs(dy);if(ax<15||ay<15||ax/ay<0.5||ax/ay>2)return null;return dy<0?(dx>0?'ur':'ul'):(dx>0?'dr':'dl');}
-function getGroup(x,y,dir){const off={ur:[0,-1],ul:[-1,-1],dr:[0,0],dl:[-1,0]};const[ox,oy]=off[dir],tx=x+ox,ty=y+oy;if(tx<0||tx>COLS-2||ty<0||ty>ROWS-2)return null;return[getIdx(tx,ty),getIdx(tx+1,ty),getIdx(tx,ty+1),getIdx(tx+1,ty+1)];}
-function isCW(dir){return dir==='ur'||dir==='dr';}
 function easeOutCubic(t){return 1-Math.pow(1-t,3);}
 function easeInOutQuad(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
-
-function execGroupRot(group,cw){
+// ══ MÉCANIQUE DE POUSSÉE (swipe directionnel sur un domino) ══
+function dirDelta(dir){return dir==='left'?{dx:-1,dy:0}:dir==='right'?{dx:1,dy:0}:dir==='up'?{dx:0,dy:-1}:{dx:0,dy:1};}
+function trySwap(fromIdx,dir,dist){
  if(gameAnim||isNav)return;
- const fi=mod(currentIdx),d=allDom[fi];
- saveState();gameAnim=true;
- const map=cw?[2,0,3,1]:[1,3,0,2];
- 
- // Sauvegarder les données logiques AVANT le swap
- const saved=group.map(i=>getDom(fi,i)?{...getDom(fi,i)}:null);
- 
- // Collecter TOUS les satellites qui vont bouger
- const movers=[];
- for(let i=0;i<4;i++){
-  const srcIdx=group[i],dstIdx=group[map[i]];
-  const sat=sats.find(s=>s.tab===fi&&s.gi===srcIdx);
-  if(!sat)continue;
-  const tp=getPos(dstIdx),tl=g2l(tp.x,tp.y);
-  const tgtPos=new THREE.Vector3(tl.x,tl.y,HALF+SAT_LIFT);
-  movers.push({sat,mesh:sat.mesh,srcIdx,dstIdx,startPos:sat.mesh.position.clone(),endPos:tgtPos});
+ const fi=mod(currentIdx);
+ const{x,y}=getPos(fromIdx);const d=dirDelta(dir);
+ dist=Math.min(dist,2);
+ const path=[];
+ for(let step=1;step<=dist;step++){
+  const idx=getIdx(x+d.dx*step,y+d.dy*step);
+  if(idx===-1||!getDom(fi,idx)){if(path.length>0)break;return;}
+  path.push(idx);
  }
- 
- // Animer sur 500ms
- const dur=500;let elapsed=0;
- const animStep=(now)=>{
-  if(!animStep._last)animStep._last=now;
-  elapsed+=now-animStep._last;animStep._last=now;
-  const p=Math.min(elapsed/dur,1),e=easeOutCubic(p);
-  movers.forEach(mv=>{
-   mv.mesh.position.lerpVectors(mv.startPos,mv.endPos,e);
-  });
-  if(p<1){requestAnimationFrame(animStep);}
+ if(path.length===0)return;
+ performSwap(fromIdx,path,dir);
+}
+function performSwap(fromIdx,path,dir){
+ const fi=mod(currentIdx);
+ const dFrom=getDom(fi,fromIdx);if(!dFrom)return;
+ saveState();gameAnim=true;
+ const rotSign=(dir==='left'||dir==='up')?-1:1;
+ const movers=[];
+ const tgt=(idx)=>{const p=getPos(idx),l=g2l(p.x,p.y);return new THREE.Vector3(l.x,l.y,HALF+SAT_LIFT);};
+ const addMover=(srcIdx)=>{const s=sats.find(z=>z.tab===fi&&z.gi===srcIdx);return s?{sat:s,mesh:s.mesh,start:s.mesh.position.clone()}:null;};
+ let result;// fonction qui applique l'état logique final
+ if(path.length===1){
+  const nIdx=path[0];const dN=getDom(fi,nIdx);
+  const mF=addMover(fromIdx),mN=addMover(nIdx);
+  if(!mF||!mN){gameAnim=false;return;}
+  mF.end=tgt(nIdx);mN.end=tgt(fromIdx);mF.rotDelta=0;mN.rotDelta=rotSign*90;
+  movers.push(mF,mN);
+  result=()=>{const a={...dN,rotation:((dN.rotation+rotSign*90)%360+360)%360};setDom(fi,fromIdx,a);setDom(fi,nIdx,dFrom);};
+ }else{
+  const bIdx=path[0],cIdx=path[1];const dB=getDom(fi,bIdx),dC=getDom(fi,cIdx);
+  const mF=addMover(fromIdx),mB=addMover(bIdx),mC=addMover(cIdx);
+  if(!mF||!mB||!mC){gameAnim=false;return;}
+  mF.end=tgt(cIdx);mF.rotDelta=0;
+  mB.end=tgt(fromIdx);mB.rotDelta=rotSign*180;
+  mC.end=tgt(bIdx);mC.rotDelta=rotSign*90;
+  movers.push(mF,mB,mC);
+  result=()=>{
+   const b={...dB,rotation:((dB.rotation+rotSign*180)%360+360)%360};
+   const c={...dC,rotation:((dC.rotation+rotSign*90)%360+360)%360};
+   setDom(fi,fromIdx,b);setDom(fi,bIdx,c);setDom(fi,cIdx,dFrom);
+  };
+ }
+ movers.forEach(m=>{m.q0=m.sat.baseQuat?m.sat.baseQuat.clone():m.mesh.quaternion.clone();m.q1=m.q0.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-m.rotDelta*Math.PI/180));m.mesh.userData._noBreath=true;});
+ const dur=600;let elapsed=0;
+ const step=(now)=>{
+  if(!step._last)step._last=now;elapsed+=now-step._last;step._last=now;
+  const p=Math.min(elapsed/dur,1),e=easeInOutQuad(p);
+  movers.forEach(m=>{m.mesh.position.lerpVectors(m.start,m.end,e);if(m.rotDelta)m.mesh.quaternion.copy(m.q0).slerp(m.q1,e);});
+  if(p<1)requestAnimationFrame(step);
   else{
-   // Appliquer le swap logique
-   for(let i=0;i<4;i++){
-    const ti=group[map[i]];
-    setDom(fi,ti,saved[i]);
-   }
-   movers.forEach(mv=>{mv.mesh.scale.set(1,1,1);});
+   result();
    rebuildFace(fi);assignFaces();updCubeTexFromPorte();refreshZoom();updateUI();
-   gameAnim=false;
-   setTimeout(()=>checkFusions(),50);
+   gameAnim=false;setTimeout(()=>checkFusions(),50);
   }
  };
- requestAnimationFrame(animStep);
+ requestAnimationFrame(step);
 }
 function addSc(base,states){const now=Date.now();let sm=1;states.forEach(s=>{sm=Math.max(sm,STATE_MULT[s]||1);});if(now-lastFusionTime<2000&&lastFusionTime>0)comboCount++;else comboCount=1;lastFusionTime=now;const cm=1+(comboCount-1)*0.5;const pts=Math.round(base*sm*cm);score+=pts;if(score>bestScore)bestScore=score;updateScore();return pts;}
 function showFP(pts){const el=document.createElement('div');el.className='floating-pts';el.textContent=`+${pts.toLocaleString()}`;el.style.left=(window.innerWidth/2)+'px';el.style.top=(window.innerHeight/2-30)+'px';document.body.appendChild(el);setTimeout(()=>el.remove(),1000);}
@@ -587,13 +566,21 @@ canvas.addEventListener('pointerdown',e=>{
 });
 canvas.addEventListener('pointermove',e=>{if(pS&&Math.hypot(e.clientX-pS.x,e.clientY-pS.y)>12)pM=true;});
 canvas.addEventListener('pointerup',e=>{if(!pS)return;const dx=e.clientX-pS.x,dy=e.clientY-pS.y;
- if(!pM){if(pCb)rotatePorte();else if(pSat)rotateDom(pSat.gi);}
- else if(Math.hypot(dx,dy)>=15){
-  // Horizontal swipe = nav Y
-  if(Math.abs(dx)>Math.abs(dy)*1.5&&Math.abs(dx)>40){if(dx<0)navRight();else navLeft();}
-  // Vertical swipe = nav X
-  else if(Math.abs(dy)>Math.abs(dx)*1.5&&Math.abs(dy)>40){if(dy<0)navUp();else navDown();}
-  else{const dir=detectDiag(dx,dy);if(dir){let gx,gy;if(pSat){const p=getPos(pSat.gi);gx=p.x;gy=p.y;}else if(pCb){gx=1;gy=2;}if(gx!==undefined){const group=getGroup(gx,gy,dir);if(group){const fi=mod(currentIdx);if(group.some(i=>getDom(fi,i)))execGroupRot(group,isCW(dir));}}}}}
+ const adx=Math.abs(dx),ady=Math.abs(dy);
+ // Geste partant d'un domino (ou de la porte) => POUSSÉE directionnelle
+ if((pSat||pCb)&&(adx>=15||ady>=15)){
+  const fromIdx=pSat?pSat.gi:PORTE_POSITIONS[0];
+  const stepPx=Math.min(window.innerWidth,window.innerHeight)*0.16;
+  let dir,dist;
+  if(adx>ady){dir=dx>0?'right':'left';dist=Math.min(Math.max(1,Math.round(adx/stepPx)),2);}
+  else{dir=dy>0?'down':'up';dist=Math.min(Math.max(1,Math.round(ady/stepPx)),2);}
+  trySwap(fromIdx,dir,dist);
+ }
+ // Geste partant du vide => NAVIGATION entre tabs
+ else if(!pSat&&!pCb&&Math.hypot(dx,dy)>=15){
+  if(adx>ady*1.5&&adx>40){if(dx<0)navRight();else navLeft();}
+  else if(ady>adx*1.5&&ady>40){if(dy<0)navUp();else navDown();}
+ }
  pS=null;pSat=null;pCb=false;});
 canvas.addEventListener('pointercancel',()=>{pS=null;pSat=null;pCb=false;});
 document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'){navRight();e.preventDefault();}else if(e.key==='ArrowLeft'){navLeft();e.preventDefault();}else if(e.key==='ArrowUp'){navUp();e.preventDefault();}else if(e.key==='ArrowDown'){navDown();e.preventDefault();}});
@@ -643,12 +630,11 @@ function drawHalo(cv,r,g,b,phase,intensity){
 const clock=new THREE.Clock();let lt=0;
 function animate(){
  requestAnimationFrame(animate);const t=clock.getElapsedTime(),dt=t-lt;lt=t;
- updateRotAnim(dt);
  if(isNav&&navDir!==0){cubeGroup.quaternion.slerp(targetQuat,0.12);if(1-Math.abs(cubeGroup.quaternion.dot(targetQuat))<0.0001){cubeGroup.quaternion.copy(targetQuat);onNavDone();}}
  haloMat.opacity=0.4+0.35*(0.5+0.5*Math.sin(t*1.8));
  camera.position.x+=(targetCamX-camera.position.x)*0.08;camera.position.z+=(targetCamZ-camera.position.z)*0.08;camera.lookAt(camera.position.x,0,0);
  const fi=mod(currentIdx);
- sats.forEach((s,si)=>{if(!isNav){if(isPorte(s.gi))s.mesh.visible=!!getDom(0,s.gi);else s.mesh.visible=(s.tab===fi);}if(s.mesh.visible){updSatTex(s);const isRotating=rotAnimActive&&rotAnimActive.sat===s;if(s.baseQuat&&!isNav&&!isRotating){const ph=t*1.2+si*1.7;const bq=new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.sin(ph)*0.012,0,Math.cos(ph*0.7)*0.008));s.mesh.quaternion.copy(s.baseQuat).multiply(bq);}
+ sats.forEach((s,si)=>{if(!isNav){if(isPorte(s.gi))s.mesh.visible=!!getDom(0,s.gi);else s.mesh.visible=(s.tab===fi);}if(s.mesh.visible){updSatTex(s);const isRotating=rotAnimActive&&rotAnimActive.sat===s;if(s.baseQuat&&!isNav&&!isRotating&&!s.mesh.userData._noBreath){const ph=t*1.2+si*1.7;const bq=new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.sin(ph)*0.012,0,Math.cos(ph*0.7)*0.008));s.mesh.quaternion.copy(s.baseQuat).multiply(bq);}
   const d=getDom(s.tab,s.gi);if(!d)return;const st=d.state||'white',ud=s.mesh.userData;
   if(st==='cosmic'){
    drawCosmicRing(ud.ringCanvas,t*Math.PI/2);ud.ringTex.needsUpdate=true;ud.ringMesh.material.opacity=1;
